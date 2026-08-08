@@ -24,6 +24,12 @@ type Value = Omit<ManagedValue, "status"> & {
   actions: Action[];
 };
 
+type MenuEntry = {
+  id: string;
+  text: string;
+  position: number;
+};
+
 type Today = {
   date: string;
   timeZone: {
@@ -37,6 +43,14 @@ type Today = {
 type ActionTarget = {
   value: Value;
   action?: Action;
+};
+
+type ActionInput = {
+  primaryValueId: string;
+  text: string;
+  done: boolean;
+  extraValueIds: string[];
+  saveForReuse: boolean;
 };
 
 type Route = "today" | "values" | "goals" | "history" | "settings";
@@ -376,6 +390,7 @@ function ValueEditor({
   const [meaning, setMeaning] = useState(value.meaning ?? "");
   const [error, setError] = useState("");
   const [saving, setSaving] = useState(false);
+  const [opened, setOpened] = useState(false);
 
   useEffect(() => {
     setName(value.name);
@@ -406,11 +421,18 @@ function ValueEditor({
 
   return (
     <li>
-      <details className="managed-value" name="managed-value">
+      <details
+        className="managed-value"
+        name="managed-value"
+        onToggle={(event) => setOpened(event.currentTarget.open)}
+      >
         <summary>
           <strong>{value.name}</strong>
           <span>{value.meaning || "No personal meaning yet."}</span>
         </summary>
+        <p className="value-detail-state">
+          State: <strong>{value.status === "active" ? "Active" : "Paused"}</strong>
+        </p>
         <form onSubmit={submit}>
           <label className="field">
             <span>Short name</span>
@@ -470,7 +492,162 @@ function ValueEditor({
             </button>
           </div>
         </form>
+        {opened && <ValueMenu value={value} />}
       </details>
+    </li>
+  );
+}
+
+function ValueMenu({ value }: { value: ManagedValue }) {
+  const [entries, setEntries] = useState<MenuEntry[]>([]);
+  const [newText, setNewText] = useState("");
+  const [error, setError] = useState("");
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+
+  const load = useCallback(async () => {
+    setEntries(
+      (await api<{ entries: MenuEntry[] }>(`/api/values/${value.id}/menu`)).entries,
+    );
+    setLoading(false);
+  }, [value.id]);
+
+  useEffect(() => {
+    void load().catch((caught) => {
+      setError(caught instanceof Error ? caught.message : "Could not load the Action Menu.");
+      setLoading(false);
+    });
+  }, [load]);
+
+  async function saveAndReload(change: () => Promise<void>) {
+    setError("");
+    setSaving(true);
+    try {
+      await change();
+      await load();
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "Could not change the Action Menu.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function addEntry(event: FormEvent) {
+    event.preventDefault();
+    await saveAndReload(async () => {
+      await api(`/api/values/${value.id}/menu`, {
+        body: JSON.stringify({ text: newText }),
+        method: "POST",
+      });
+      setNewText("");
+    });
+  }
+
+  async function moveEntry(id: string, direction: -1 | 1) {
+    const ids = entries.map((entry) => entry.id);
+    const index = ids.indexOf(id);
+    const target = index + direction;
+    if (index < 0 || target < 0 || target >= ids.length) return;
+    [ids[index], ids[target]] = [ids[target], ids[index]];
+    await api(`/api/values/${value.id}/menu/order`, {
+      body: JSON.stringify({ ids }),
+      method: "PUT",
+    });
+  }
+
+  return (
+    <section className="value-menu" aria-labelledby={`menu-${value.id}`}>
+      <h3 id={`menu-${value.id}`}>Action Menu</h3>
+      <p>Save actions that may help again.</p>
+      {loading ? (
+        <p className="notice" aria-live="polite">Loading Action Menu…</p>
+      ) : (
+        <ul className="action-menu-list">
+          {entries.map((entry, index) => (
+            <MenuEntryEditor
+              canMoveDown={index < entries.length - 1}
+              canMoveUp={index > 0}
+              entry={entry}
+              key={entry.id}
+              move={(direction) => saveAndReload(() => moveEntry(entry.id, direction))}
+              remove={() => saveAndReload(async () => {
+                await api(`/api/menu/${entry.id}`, { method: "DELETE" });
+              })}
+              saving={saving}
+              update={(text) => saveAndReload(async () => {
+                await api(`/api/menu/${entry.id}`, {
+                  body: JSON.stringify({ text }),
+                  method: "PATCH",
+                });
+              })}
+            />
+          ))}
+        </ul>
+      )}
+      {!loading && entries.length === 0 && (
+        <p className="notice">No saved actions yet.</p>
+      )}
+      <form className="add-menu-entry" onSubmit={addEntry}>
+        <label className="field">
+          <span>New menu entry</span>
+          <input
+            maxLength={500}
+            onChange={(event) => setNewText(event.target.value)}
+            placeholder={`An action for ${value.name}`}
+            required
+            value={newText}
+          />
+        </label>
+        <button className="quiet-button" disabled={saving} type="submit">
+          Add to menu
+        </button>
+      </form>
+      {error && <p className="form-error" role="alert">{error}</p>}
+    </section>
+  );
+}
+
+function MenuEntryEditor({
+  entry,
+  canMoveUp,
+  canMoveDown,
+  saving,
+  update,
+  remove,
+  move,
+}: {
+  entry: MenuEntry;
+  canMoveUp: boolean;
+  canMoveDown: boolean;
+  saving: boolean;
+  update: (text: string) => Promise<void>;
+  remove: () => Promise<void>;
+  move: (direction: -1 | 1) => Promise<void>;
+}) {
+  const [text, setText] = useState(entry.text);
+
+  useEffect(() => setText(entry.text), [entry.text]);
+
+  return (
+    <li>
+      <form className="menu-entry" onSubmit={(event) => {
+        event.preventDefault();
+        void update(text);
+      }}>
+        <input
+          aria-label="Action Menu Entry"
+          maxLength={500}
+          onChange={(event) => setText(event.target.value)}
+          required
+          value={text}
+        />
+        <div className="menu-entry-controls">
+          <button className="quiet-button" disabled={saving} type="submit">Save</button>
+          <button className="quiet-button" disabled={!canMoveUp || saving} onClick={() => void move(-1)} type="button">Move up</button>
+          <button className="quiet-button" disabled={!canMoveDown || saving} onClick={() => void move(1)} type="button">Move down</button>
+          <button className="danger-button" disabled={saving} onClick={() => void remove()} type="button">Delete</button>
+        </div>
+      </form>
     </li>
   );
 }
@@ -575,10 +752,7 @@ function ActionDialog({
   close: () => void;
   save: (
     action: Action | undefined,
-    primaryValueId: string,
-    text: string,
-    done: boolean,
-    extraValueIds: string[],
+    input: ActionInput,
   ) => Promise<void>;
   remove: (actionId: string) => Promise<void>;
 }) {
@@ -588,6 +762,11 @@ function ActionDialog({
   const [done, setDone] = useState(true);
   const [primaryValueId, setPrimaryValueId] = useState("");
   const [extraValueIds, setExtraValueIds] = useState<string[]>([]);
+  const [menuEntries, setMenuEntries] = useState<MenuEntry[]>([]);
+  const [menuFilter, setMenuFilter] = useState("");
+  const [menuLoading, setMenuLoading] = useState(false);
+  const [selectedMenuEntryId, setSelectedMenuEntryId] = useState<string>();
+  const [saveForReuse, setSaveForReuse] = useState(false);
   const [error, setError] = useState("");
   const [saving, setSaving] = useState(false);
 
@@ -604,6 +783,11 @@ function ActionDialog({
         .filter((linkedValue) => !linkedValue.isPrimary)
         .map((linkedValue) => linkedValue.id) ?? [],
     );
+    setMenuEntries([]);
+    setMenuFilter("");
+    setMenuLoading(false);
+    setSelectedMenuEntryId(undefined);
+    setSaveForReuse(false);
     setError("");
     setSaving(false);
     dialog.current.showModal();
@@ -616,13 +800,37 @@ function ActionDialog({
     setError("");
     setSaving(true);
     try {
-      await save(target.action, primaryValueId, text, done, extraValueIds);
+      await save(
+        target.action,
+        { primaryValueId, text, done, extraValueIds, saveForReuse },
+      );
       dialog.current?.close();
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "Could not save the action.");
       setSaving(false);
     }
   }
+
+  async function openMenu() {
+    if (!target) return;
+    setError("");
+    setMenuLoading(true);
+    try {
+      setMenuEntries(
+        (await api<{ entries: MenuEntry[] }>(
+          `/api/values/${target.value.id}/menu`,
+        )).entries,
+      );
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "Could not load the Action Menu.");
+    } finally {
+      setMenuLoading(false);
+    }
+  }
+
+  const filteredMenuEntries = menuEntries.filter((entry) =>
+    entry.text.toLocaleLowerCase().includes(menuFilter.trim().toLocaleLowerCase()),
+  );
 
   async function deleteAction() {
     if (!target?.action || !window.confirm("Delete this action?")) return;
@@ -640,7 +848,7 @@ function ActionDialog({
   return (
     <dialog className="action-dialog" onClose={close} ref={dialog}>
       {target && (
-        <form onSubmit={submit}>
+        <form key={target.action?.id ?? target.value.id} onSubmit={submit}>
           <header className="dialog-heading">
             <div>
               <p className="eyebrow">{target.action ? "Today" : target.value.name}</p>
@@ -656,13 +864,58 @@ function ActionDialog({
             <input
               autoFocus
               maxLength={500}
-              onChange={(event) => setText(event.target.value)}
+              onChange={(event) => {
+                setText(event.target.value);
+                setSelectedMenuEntryId(undefined);
+              }}
               placeholder="What did you do, or what will you do?"
               ref={actionInput}
               required
               value={text}
             />
           </label>
+
+          {!target.action && (
+            <details
+              className="action-menu-picker"
+              onToggle={(event) => {
+                if (event.currentTarget.open) void openMenu();
+              }}
+            >
+              <summary>Open the menu</summary>
+              <div className="menu-picker-body">
+                <input
+                  aria-label="Type to filter"
+                  onChange={(event) => setMenuFilter(event.target.value)}
+                  placeholder="Type to filter"
+                  type="search"
+                  value={menuFilter}
+                />
+                {menuLoading ? (
+                  <p className="notice" aria-live="polite">Loading menu…</p>
+                ) : filteredMenuEntries.length ? (
+                  <div className="menu-picker-results">
+                    {filteredMenuEntries.map((entry) => (
+                      <button
+                        key={entry.id}
+                        onClick={() => {
+                          setText(entry.text);
+                          setSelectedMenuEntryId(entry.id);
+                          setSaveForReuse(false);
+                          actionInput.current?.focus();
+                        }}
+                        type="button"
+                      >
+                        {entry.text}
+                      </button>
+                    ))}
+                  </div>
+                ) : (
+                  <p className="notice">No matching action.</p>
+                )}
+              </div>
+            </details>
+          )}
 
           {target.action && values.length > 1 && (
             <label className="field">
@@ -721,6 +974,24 @@ function ActionDialog({
                   ))}
               </fieldset>
             </details>
+          )}
+
+          {!target.action && !selectedMenuEntryId && (
+            <label className="reuse-control">
+              <input
+                checked={saveForReuse}
+                onChange={(event) => setSaveForReuse(event.target.checked)}
+                type="checkbox"
+              />
+              <span>
+                <strong>Save for reuse</strong>
+                <small>
+                  {extraValueIds.length
+                    ? "Adds a separate copy to each selected Value."
+                    : `Adds this free entry to ${target.value.name}’s Action Menu.`}
+                </small>
+              </span>
+            </label>
           )}
 
           {error && <p className="form-error" role="alert">{error}</p>}
@@ -836,13 +1107,10 @@ export default function App() {
 
   async function saveAction(
     action: Action | undefined,
-    primaryValueId: string,
-    text: string,
-    done: boolean,
-    extraValueIds: string[],
+    input: ActionInput,
   ) {
-    await api(action ? `/api/actions/${action.id}` : `/api/values/${primaryValueId}/actions`, {
-      body: JSON.stringify({ text, done, primaryValueId, extraValueIds }),
+    await api(action ? `/api/actions/${action.id}` : `/api/values/${input.primaryValueId}/actions`, {
+      body: JSON.stringify(input),
       method: action ? "PATCH" : "POST",
     });
     await loadToday();

@@ -27,6 +27,12 @@ type LinkedValue = {
   name: string;
 };
 
+type MenuRow = {
+  id: string;
+  text: string;
+  position: number;
+};
+
 let cachedIssuer = "";
 let cachedJwks: ReturnType<typeof createRemoteJWKSet> | undefined;
 
@@ -116,6 +122,22 @@ async function activeValues(database: D1Database, ids: string[]) {
     .bind(...ids)
     .all<LinkedValue>();
   return results;
+}
+
+function insertMenuEntry(
+  database: D1Database,
+  id: string,
+  valueId: string,
+  text: string,
+  timestamp: string,
+) {
+  return database.prepare(
+    `INSERT INTO action_menu_entries
+       (id, value_id, text, position, created_at, updated_at)
+     VALUES (?, ?, ?,
+       (SELECT COALESCE(MAX(position), -1) + 1
+        FROM action_menu_entries WHERE value_id = ?), ?, ?)`,
+  ).bind(id, valueId, text, valueId, timestamp, timestamp);
 }
 
 function plannedValueCleanup(database: D1Database, valueId: string) {
@@ -499,6 +521,147 @@ export function createApp(now: () => Date = () => new Date()) {
     );
   });
 
+  app.get("/api/values/:valueId/menu", async (context) => {
+    const valueId = context.req.param("valueId");
+    const value = await context.env.DB.prepare(
+      "SELECT id FROM app_values WHERE id = ?",
+    )
+      .bind(valueId)
+      .first<{ id: string }>();
+    if (!value) return apiError(context, 404, "Value not found.");
+
+    const query = context.req.query("q")?.trim() ?? "";
+    if (query.length > 500) {
+      return apiError(context, 400, "Filter text must be 500 characters or fewer.");
+    }
+    const { results: entries } = await context.env.DB.prepare(
+      `SELECT id, text, position
+       FROM action_menu_entries
+       WHERE value_id = ? AND (? = '' OR instr(lower(text), lower(?)) > 0)
+       ORDER BY position, created_at`,
+    )
+      .bind(valueId, query, query)
+      .all<MenuRow>();
+    return context.json({ entries });
+  });
+
+  app.post("/api/values/:valueId/menu", async (context) => {
+    const body = await readObject(context);
+    const text = readText(body?.text, 500);
+    if (!text) {
+      return apiError(context, 400, "Use menu text from 1 to 500 characters.");
+    }
+
+    const valueId = context.req.param("valueId");
+    const value = await context.env.DB.prepare(
+      "SELECT id FROM app_values WHERE id = ?",
+    )
+      .bind(valueId)
+      .first<{ id: string }>();
+    if (!value) return apiError(context, 404, "Value not found.");
+
+    const id = crypto.randomUUID();
+    const timestamp = now().toISOString();
+    await insertMenuEntry(
+      context.env.DB,
+      id,
+      valueId,
+      text,
+      timestamp,
+    ).run();
+    const entry = await context.env.DB.prepare(
+      "SELECT id, text, position FROM action_menu_entries WHERE id = ?",
+    )
+      .bind(id)
+      .first<MenuRow>();
+    return context.json({ entry }, 201);
+  });
+
+  app.patch("/api/menu/:entryId", async (context) => {
+    const body = await readObject(context);
+    const text = readText(body?.text, 500);
+    if (!text) {
+      return apiError(context, 400, "Use menu text from 1 to 500 characters.");
+    }
+
+    const entryId = context.req.param("entryId");
+    const result = await context.env.DB.prepare(
+      "UPDATE action_menu_entries SET text = ?, updated_at = ? WHERE id = ?",
+    )
+      .bind(text, now().toISOString(), entryId)
+      .run();
+    if (!result.meta.changes) {
+      return apiError(context, 404, "Action Menu Entry not found.");
+    }
+    const entry = await context.env.DB.prepare(
+      "SELECT id, text, position FROM action_menu_entries WHERE id = ?",
+    )
+      .bind(entryId)
+      .first<MenuRow>();
+    return context.json({ entry });
+  });
+
+  app.delete("/api/menu/:entryId", async (context) => {
+    const result = await context.env.DB.prepare(
+      "DELETE FROM action_menu_entries WHERE id = ?",
+    )
+      .bind(context.req.param("entryId"))
+      .run();
+    if (!result.meta.changes) {
+      return apiError(context, 404, "Action Menu Entry not found.");
+    }
+    return context.body(null, 204);
+  });
+
+  app.put("/api/values/:valueId/menu/order", async (context) => {
+    const body = await readObject(context);
+    const ids = body?.ids;
+    if (
+      !Array.isArray(ids) ||
+      ids.length > 1_000 ||
+      ids.some((id) => typeof id !== "string" || !id) ||
+      new Set(ids).size !== ids.length
+    ) {
+      return apiError(context, 400, "Send every Action Menu Entry once.");
+    }
+
+    const valueId = context.req.param("valueId");
+    const value = await context.env.DB.prepare(
+      "SELECT id FROM app_values WHERE id = ?",
+    )
+      .bind(valueId)
+      .first<{ id: string }>();
+    if (!value) return apiError(context, 404, "Value not found.");
+
+    const { results: stored } = await context.env.DB.prepare(
+      "SELECT id FROM action_menu_entries WHERE value_id = ?",
+    )
+      .bind(valueId)
+      .all<{ id: string }>();
+    const storedIds = new Set(stored.map(({ id }) => id));
+    if (ids.length !== stored.length || ids.some((id) => !storedIds.has(id))) {
+      return apiError(context, 400, "Send every Action Menu Entry once.");
+    }
+
+    if (ids.length) {
+      const timestamp = now().toISOString();
+      await context.env.DB.batch(
+        ids.map((id, position) =>
+          context.env.DB.prepare(
+            "UPDATE action_menu_entries SET position = ?, updated_at = ? WHERE id = ?",
+          ).bind(position, timestamp, id),
+        ),
+      );
+    }
+    const { results: entries } = await context.env.DB.prepare(
+      `SELECT id, text, position FROM action_menu_entries
+       WHERE value_id = ? ORDER BY position, created_at`,
+    )
+      .bind(valueId)
+      .all<MenuRow>();
+    return context.json({ entries });
+  });
+
   app.post("/api/values/:valueId/actions", async (context) => {
     const timeZone = await timeZoneState(context);
     if (!timeZone) {
@@ -513,6 +676,13 @@ export function createApp(now: () => Date = () => new Date()) {
     if (typeof body?.done !== "boolean") {
       return apiError(context, 400, "Done must be on or off.");
     }
+    if (
+      body.saveForReuse !== undefined &&
+      typeof body.saveForReuse !== "boolean"
+    ) {
+      return apiError(context, 400, "Save for reuse must be on or off.");
+    }
+    const saveForReuse = body.saveForReuse === true;
 
     const primaryValueId = context.req.param("valueId");
     const extraValueIds = readExtraValueIds(
@@ -562,6 +732,17 @@ export function createApp(now: () => Date = () => new Date()) {
           extraValue.name,
         );
       }),
+      ...(saveForReuse
+        ? linkedValues.map((linkedValue) =>
+            insertMenuEntry(
+              context.env.DB,
+              crypto.randomUUID(),
+              linkedValue.id,
+              text,
+              timestamp,
+            ),
+          )
+        : []),
     ]);
 
     return context.json(

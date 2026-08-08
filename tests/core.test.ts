@@ -53,6 +53,19 @@ async function createAction(
   return (await response.json<{ action: { id: string } }>()).action.id;
 }
 
+async function createMenuEntry(
+  app: ReturnType<typeof createApp>,
+  valueId: string,
+  text: string,
+) {
+  const response = await request(app, `/api/values/${valueId}/menu`, {
+    method: "POST",
+    body: JSON.stringify({ text }),
+  });
+  expect(response.status).toBe(201);
+  return (await response.json<{ entry: { id: string } }>()).entry.id;
+}
+
 beforeEach(async () => {
   await env.DB.batch([
     env.DB.prepare("DELETE FROM daily_action_values"),
@@ -674,6 +687,141 @@ describe("fluid Values", () => {
     expect((await listedValues(app))[0]).toEqual(
       expect.objectContaining({ id: careId, name: "Care", meaning: null }),
     );
+  });
+});
+
+describe("Action Menus", () => {
+  it("adds at the bottom, edits, filters, fully reorders, and deletes entries", async () => {
+    const app = createApp(now);
+    const valueId = await createValue(app, "Care");
+    const waterId = await createMenuEntry(app, valueId, "Drink water");
+    const outsideId = await createMenuEntry(app, valueId, "Step outside");
+    const restId = await createMenuEntry(app, valueId, "Take a real break");
+
+    expect(await (await request(app, `/api/values/${valueId}/menu`)).json()).toEqual({
+      entries: [
+        { id: waterId, text: "Drink water", position: 0 },
+        { id: outsideId, text: "Step outside", position: 1 },
+        { id: restId, text: "Take a real break", position: 2 },
+      ],
+    });
+
+    const edited = await request(app, `/api/menu/${outsideId}`, {
+      method: "PATCH",
+      body: JSON.stringify({ text: "Go outside for five minutes" }),
+    });
+    expect(edited.status).toBe(200);
+    expect(
+      await (await request(app, `/api/values/${valueId}/menu?q=OUTside`)).json(),
+    ).toEqual({
+      entries: [
+        { id: outsideId, text: "Go outside for five minutes", position: 1 },
+      ],
+    });
+
+    for (const ids of [
+      [restId, waterId],
+      [restId, waterId, "missing"],
+      [restId, restId, waterId],
+      [restId, waterId, outsideId, outsideId],
+    ]) {
+      expect(
+        (
+          await request(app, `/api/values/${valueId}/menu/order`, {
+            method: "PUT",
+            body: JSON.stringify({ ids }),
+          })
+        ).status,
+      ).toBe(400);
+    }
+
+    const reordered = await request(app, `/api/values/${valueId}/menu/order`, {
+      method: "PUT",
+      body: JSON.stringify({ ids: [restId, waterId, outsideId] }),
+    });
+    expect(reordered.status).toBe(200);
+    expect(
+      (await reordered.json<{ entries: { id: string; position: number }[] }>()).entries,
+    ).toEqual([
+      expect.objectContaining({ id: restId, position: 0 }),
+      expect.objectContaining({ id: waterId, position: 1 }),
+      expect.objectContaining({ id: outsideId, position: 2 }),
+    ]);
+
+    expect(
+      (await request(app, `/api/menu/${waterId}`, { method: "DELETE" })).status,
+    ).toBe(204);
+    expect(
+      (await (await request(app, `/api/values/${valueId}/menu`)).json<{
+        entries: { id: string }[];
+      }>()).entries.map(({ id }) => id),
+    ).toEqual([restId, outsideId]);
+  });
+
+  it("copies menu wording into an independent action and saves separate reusable copies", async () => {
+    const app = createApp(now);
+    const careId = await createValue(app, "Care");
+    const connectionId = await createValue(app, "Connection");
+    const menuId = await createMenuEntry(app, careId, "Take a real break");
+
+    const copiedAction = await request(app, `/api/values/${careId}/actions`, {
+      method: "POST",
+      body: JSON.stringify({
+        text: "Take a real break",
+        done: true,
+        extraValueIds: [],
+      }),
+    });
+    expect(copiedAction.status).toBe(201);
+    expect(
+      (
+        await request(app, `/api/menu/${menuId}`, {
+          method: "PATCH",
+          body: JSON.stringify({ text: "Rest for ten minutes" }),
+        })
+      ).status,
+    ).toBe(200);
+    expect(
+      (await request(app, `/api/menu/${menuId}`, { method: "DELETE" })).status,
+    ).toBe(204);
+    const today = await (await request(app, "/api/today")).json<{
+      values: { id: string; actions: { text: string }[] }[];
+    }>();
+    expect(today.values.find(({ id }) => id === careId)?.actions).toEqual([
+      expect.objectContaining({ text: "Take a real break" }),
+    ]);
+
+    const savedAction = await request(app, `/api/values/${careId}/actions`, {
+      method: "POST",
+      body: JSON.stringify({
+        text: "Send one honest message",
+        done: false,
+        extraValueIds: [connectionId],
+        saveForReuse: true,
+      }),
+    });
+    expect(savedAction.status).toBe(201);
+    const careMenu = await (await request(app, `/api/values/${careId}/menu`)).json<{
+      entries: { id: string; text: string }[];
+    }>();
+    const connectionMenu = await (
+      await request(app, `/api/values/${connectionId}/menu`)
+    ).json<typeof careMenu>();
+    expect(careMenu.entries).toEqual([
+      expect.objectContaining({ text: "Send one honest message" }),
+    ]);
+    expect(connectionMenu.entries).toEqual([
+      expect.objectContaining({ text: "Send one honest message" }),
+    ]);
+    expect(careMenu.entries[0].id).not.toBe(connectionMenu.entries[0].id);
+
+    await request(app, `/api/menu/${careMenu.entries[0].id}`, {
+      method: "PATCH",
+      body: JSON.stringify({ text: "Send a short message" }),
+    });
+    expect(
+      await (await request(app, `/api/values/${connectionId}/menu`)).json(),
+    ).toEqual(connectionMenu);
   });
 });
 
