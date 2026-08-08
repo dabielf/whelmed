@@ -53,6 +53,40 @@ async function createAction(
   return (await response.json<{ action: { id: string } }>()).action.id;
 }
 
+async function seedAction({
+  id,
+  date,
+  text,
+  status,
+  values,
+}: {
+  id: string;
+  date: string;
+  text: string;
+  status: "planned" | "done";
+  values: { id: string; name: string; primary?: boolean }[];
+}) {
+  await env.DB.batch([
+    env.DB.prepare(
+      `INSERT INTO daily_actions
+         (id, action_date, text, status, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+    ).bind(id, date, text, status, `${date}T10:00:00.000Z`, `${date}T10:00:00.000Z`),
+    ...values.map((value, index) => env.DB.prepare(
+      `INSERT INTO daily_action_values
+         (id, action_id, value_id, value_key, value_name, is_primary)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+    ).bind(
+      `${id}-value-${index}`,
+      id,
+      value.id,
+      `value:${value.id}`,
+      value.name,
+      value.primary === false ? 0 : 1,
+    )),
+  ]);
+}
+
 async function createMenuEntry(
   app: ReturnType<typeof createApp>,
   valueId: string,
@@ -1146,6 +1180,338 @@ describe("current Goals", () => {
     expect(await env.DB.prepare(
       "SELECT status FROM goals WHERE id = 'old-week'",
     ).first()).toEqual({ status: "needs_review" });
+  });
+});
+
+describe("read-only History", () => {
+  it("returns only Done actions from past days in an inclusive range", async () => {
+    const app = createApp(now);
+    const careId = await createValue(app, "Care");
+    await seedAction({
+      id: "outside-range",
+      date: "2026-07-31",
+      text: "Outside",
+      status: "done",
+      values: [{ id: careId, name: "Care" }],
+    });
+    await seedAction({
+      id: "past-done",
+      date: "2026-08-01",
+      text: "Took a real break",
+      status: "done",
+      values: [{ id: careId, name: "Care" }],
+    });
+    await seedAction({
+      id: "past-planned",
+      date: "2026-08-02",
+      text: "Read later",
+      status: "planned",
+      values: [{ id: careId, name: "Care" }],
+    });
+    await seedAction({
+      id: "today-done",
+      date: "2026-08-08",
+      text: "Today",
+      status: "done",
+      values: [{ id: careId, name: "Care" }],
+    });
+
+    const response = await request(
+      app,
+      "/api/history?start=2026-08-01&end=2026-08-07",
+    );
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({
+      start: "2026-08-01",
+      end: "2026-08-07",
+      counts: [{
+        key: `value:${careId}`,
+        id: careId,
+        name: "Care",
+        count: 1,
+        deleted: false,
+      }],
+      actions: [{
+        id: "past-done",
+        date: "2026-08-01",
+        text: "Took a real break",
+        values: [{
+          key: `value:${careId}`,
+          id: careId,
+          name: "Care",
+          deleted: false,
+        }],
+      }],
+    });
+  });
+
+  it("keeps per-Value counts while filtering multi-Value actions in place", async () => {
+    const app = createApp(now);
+    const careId = await createValue(app, "Care");
+    const connectionId = await createValue(app, "Connection");
+    await seedAction({
+      id: "care-only",
+      date: "2026-08-01",
+      text: "Took a real break",
+      status: "done",
+      values: [{ id: careId, name: "Care" }],
+    });
+    await seedAction({
+      id: "care-and-connection",
+      date: "2026-08-02",
+      text: "Had a kind talk",
+      status: "done",
+      values: [
+        { id: careId, name: "Care" },
+        { id: connectionId, name: "Connection", primary: false },
+      ],
+    });
+    await seedAction({
+      id: "connection-only",
+      date: "2026-07-10",
+      text: "Sent a voice note",
+      status: "done",
+      values: [{ id: connectionId, name: "Connection" }],
+    });
+
+    const response = await request(
+      app,
+      `/api/history?start=2026-07-09&end=2026-08-07&value=${encodeURIComponent(`value:${connectionId}`)}`,
+    );
+    expect(response.status).toBe(200);
+    const history = await response.json<{
+      counts: { key: string; name: string; count: number }[];
+      actions: {
+        id: string;
+        values: { key: string; name: string }[];
+      }[];
+    }>();
+    expect(history.counts).toEqual([
+      expect.objectContaining({ key: `value:${careId}`, name: "Care", count: 2 }),
+      expect.objectContaining({ key: `value:${connectionId}`, name: "Connection", count: 2 }),
+    ]);
+    expect(history.actions.map(({ id }) => id)).toEqual([
+      "care-and-connection",
+      "connection-only",
+    ]);
+    expect(history.actions[0].values).toEqual([
+      expect.objectContaining({ key: `value:${careId}`, name: "Care" }),
+      expect.objectContaining({ key: `value:${connectionId}`, name: "Connection" }),
+    ]);
+  });
+
+  it("uses current names for live Values and the last name after deletion", async () => {
+    const app = createApp(now);
+    const valueId = await createValue(app, "Rest");
+    await seedAction({
+      id: "renamed-value-action",
+      date: "2026-08-01",
+      text: "Stopped for lunch",
+      status: "done",
+      values: [{ id: valueId, name: "Rest" }],
+    });
+
+    expect((await request(app, `/api/values/${valueId}`, {
+      method: "PATCH",
+      body: JSON.stringify({ name: "Care" }),
+    })).status).toBe(200);
+    let history = await (await request(
+      app,
+      "/api/history?start=2026-08-01&end=2026-08-07",
+    )).json<{
+      counts: { key: string; id: string | null; name: string; deleted: boolean }[];
+      actions: { values: { key: string; id: string | null; name: string; deleted: boolean }[] }[];
+    }>();
+    expect(history.counts).toEqual([
+      expect.objectContaining({
+        key: `value:${valueId}`,
+        id: valueId,
+        name: "Care",
+        deleted: false,
+      }),
+    ]);
+    expect(history.actions[0].values[0]).toEqual(expect.objectContaining({
+      name: "Care",
+      deleted: false,
+    }));
+
+    expect((await request(app, `/api/values/${valueId}`, { method: "DELETE" })).status).toBe(204);
+    const deletedKey = encodeURIComponent(`value:${valueId}`);
+    history = await (await request(
+      app,
+      `/api/history?start=2026-08-01&end=2026-08-07&value=${deletedKey}`,
+    )).json<typeof history>();
+    expect(history.counts).toEqual([
+      expect.objectContaining({
+        key: `value:${valueId}`,
+        id: null,
+        name: "Care",
+        deleted: true,
+      }),
+    ]);
+    expect(history.actions[0].values[0]).toEqual(expect.objectContaining({
+      key: `value:${valueId}`,
+      id: null,
+      name: "Care",
+      deleted: true,
+    }));
+  });
+
+  it("keeps deleted Values separate when a later Value reuses the same name", async () => {
+    const app = createApp(now);
+    const firstCareId = await createValue(app, "Care");
+    await seedAction({
+      id: "first-care-action",
+      date: "2026-08-01",
+      text: "First Care action",
+      status: "done",
+      values: [{ id: firstCareId, name: "Care" }],
+    });
+    await request(app, `/api/values/${firstCareId}`, { method: "DELETE" });
+
+    const secondCareId = await createValue(app, "Care");
+    await seedAction({
+      id: "second-care-action",
+      date: "2026-08-02",
+      text: "Second Care action",
+      status: "done",
+      values: [{ id: secondCareId, name: "Care" }],
+    });
+    await request(app, `/api/values/${secondCareId}`, { method: "DELETE" });
+
+    const history = await (await request(
+      app,
+      "/api/history?start=2026-08-01&end=2026-08-07",
+    )).json<{
+      counts: { key: string; name: string; count: number; deleted: boolean }[];
+    }>();
+    expect(history.counts).toHaveLength(2);
+    expect(history.counts).toEqual(expect.arrayContaining([
+      {
+        key: `value:${firstCareId}`,
+        id: null,
+        name: "Care",
+        count: 1,
+        deleted: true,
+      },
+      {
+        key: `value:${secondCareId}`,
+        id: null,
+        name: "Care",
+        count: 1,
+        deleted: true,
+      },
+    ]));
+
+    for (const [key, actionId] of [
+      [`value:${firstCareId}`, "first-care-action"],
+      [`value:${secondCareId}`, "second-care-action"],
+    ]) {
+      const filtered = await (await request(
+        app,
+        `/api/history?start=2026-08-01&end=2026-08-07&value=${encodeURIComponent(key)}`,
+      )).json<{ actions: { id: string }[] }>();
+      expect(filtered.actions.map(({ id }) => id)).toEqual([actionId]);
+    }
+  });
+
+  it("supports the inclusive 7-day, 30-day, and 90-day periods", async () => {
+    const app = createApp(now);
+    const careId = await createValue(app, "Care");
+    for (const [id, date] of [
+      ["day-91", "2026-05-09"],
+      ["day-90", "2026-05-10"],
+      ["day-31", "2026-07-08"],
+      ["day-30", "2026-07-09"],
+      ["day-8", "2026-07-31"],
+      ["day-7", "2026-08-01"],
+      ["day-1", "2026-08-07"],
+    ]) {
+      await seedAction({
+        id,
+        date,
+        text: id,
+        status: "done",
+        values: [{ id: careId, name: "Care" }],
+      });
+    }
+
+    async function ids(start: string) {
+      const history = await (await request(
+        app,
+        `/api/history?start=${start}&end=2026-08-07`,
+      )).json<{ actions: { id: string }[] }>();
+      return history.actions.map(({ id }) => id);
+    }
+
+    expect(await ids("2026-08-01")).toEqual(["day-1", "day-7"]);
+    expect(await ids("2026-07-09")).toEqual(["day-1", "day-7", "day-8", "day-30"]);
+    expect(await ids("2026-05-10")).toEqual([
+      "day-1",
+      "day-7",
+      "day-8",
+      "day-30",
+      "day-31",
+      "day-90",
+    ]);
+  });
+
+  it("validates ranges and keeps History read-only under the App Time Zone", async () => {
+    const currentTime = () => new Date("2026-08-08T23:30:00.000Z");
+    const app = createApp(currentTime);
+    const careId = await createValue(app, "Care");
+    await seedAction({
+      id: "past-action",
+      date: "2026-08-08",
+      text: "Rested",
+      status: "done",
+      values: [{ id: careId, name: "Care" }],
+    });
+
+    expect((await request(
+      app,
+      "/api/history?start=2026-08-08&end=2026-08-08",
+      {},
+      "America/Vancouver",
+    )).status).toBe(400);
+    expect((await request(app, "/api/settings", {
+      method: "PATCH",
+      body: JSON.stringify({ appTimeZone: "Europe/Paris" }),
+    })).status).toBe(200);
+    expect((await request(
+      app,
+      "/api/history?start=2026-08-08&end=2026-08-08",
+      {},
+      "Not/AZone",
+    )).status).toBe(200);
+
+    for (const path of [
+      "/api/history",
+      "/api/history?start=nope&end=2026-08-08",
+      "/api/history?start=2026-08-08&end=2026-08-07",
+      "/api/history?start=2026-08-09&end=2026-08-09",
+      "/api/history?start=2026-08-08&end=2026-08-08&value=missing",
+    ]) {
+      expect((await request(app, path, {}, "Not/AZone")).status).toBe(400);
+    }
+    for (const method of ["POST", "PATCH", "DELETE"]) {
+      expect((await request(app, "/api/history", { method }, "Not/AZone")).status).toBe(404);
+    }
+    expect((await request(app, "/api/actions/past-action", {
+      method: "PATCH",
+      body: JSON.stringify({
+        text: "Changed the past",
+        done: false,
+        primaryValueId: careId,
+        extraValueIds: [],
+      }),
+    }, "Not/AZone")).status).toBe(404);
+    expect((await request(
+      app,
+      "/api/actions/past-action",
+      { method: "DELETE" },
+      "Not/AZone",
+    )).status).toBe(404);
   });
 });
 

@@ -1,5 +1,6 @@
 import { Hono, type Context } from "hono";
 import { createRemoteJWKSet, jwtVerify } from "jose";
+import { readHistory } from "./history";
 
 type AppBindings = { Bindings: Env };
 type AppContext = Context<AppBindings>;
@@ -464,6 +465,25 @@ export function createApp(now: () => Date = () => new Date()) {
         ),
       })),
     });
+  });
+
+  app.get("/api/history", async (context) => {
+    const timeZone = await timeZoneState(context);
+    if (!timeZone) {
+      return apiError(context, 400, "A valid browser time zone is required.");
+    }
+    const history = await readHistory({
+      database: context.env.DB,
+      currentTime: now(),
+      timeZone: timeZone.effectiveTimeZone,
+      start: context.req.query("start"),
+      end: context.req.query("end"),
+      selectedValue: context.req.query("value"),
+    });
+    if ("error" in history) {
+      return apiError(context, 400, history.error ?? "Invalid History request.");
+    }
+    return context.json(history);
   });
 
   app.get("/api/goals", async (context) => {
@@ -1057,19 +1077,20 @@ export function createApp(now: () => Date = () => new Date()) {
       ).bind(id, date, text, status, timestamp, timestamp),
       context.env.DB.prepare(
         `INSERT INTO daily_action_values
-           (id, action_id, value_id, value_name, is_primary)
-         VALUES (?, ?, ?, ?, 1)`,
-      ).bind(crypto.randomUUID(), id, value.id, value.name),
+           (id, action_id, value_id, value_key, value_name, is_primary)
+         VALUES (?, ?, ?, ?, ?, 1)`,
+      ).bind(crypto.randomUUID(), id, value.id, `value:${value.id}`, value.name),
       ...extraValueIds.map((extraValueId) => {
         const extraValue = linkedValues.find(({ id }) => id === extraValueId)!;
         return context.env.DB.prepare(
           `INSERT INTO daily_action_values
-             (id, action_id, value_id, value_name, is_primary)
-           VALUES (?, ?, ?, ?, 0)`,
+             (id, action_id, value_id, value_key, value_name, is_primary)
+           VALUES (?, ?, ?, ?, ?, 0)`,
         ).bind(
           crypto.randomUUID(),
           id,
           extraValue.id,
+          `value:${extraValue.id}`,
           extraValue.name,
         );
       }),
@@ -1162,12 +1183,13 @@ export function createApp(now: () => Date = () => new Date()) {
         const linkedValue = linkedValues.find(({ id }) => id === valueId)!;
         return context.env.DB.prepare(
           `INSERT INTO daily_action_values
-             (id, action_id, value_id, value_name, is_primary)
-           VALUES (?, ?, ?, ?, ?)`,
+             (id, action_id, value_id, value_key, value_name, is_primary)
+           VALUES (?, ?, ?, ?, ?, ?)`,
         ).bind(
           crypto.randomUUID(),
           actionId,
           linkedValue.id,
+          `value:${linkedValue.id}`,
           linkedValue.name,
           linkedValue.id === primaryValueId ? 1 : 0,
         );

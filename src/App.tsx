@@ -65,6 +65,25 @@ type Today = {
   values: Value[];
 };
 
+type HistoryValue = {
+  key: string;
+  id: string | null;
+  name: string;
+  deleted: boolean;
+};
+
+type HistoryData = {
+  start: string;
+  end: string;
+  counts: (HistoryValue & { count: number })[];
+  actions: {
+    id: string;
+    date: string;
+    text: string;
+    values: HistoryValue[];
+  }[];
+};
+
 type ActionTarget = {
   value: Value;
   action?: Action;
@@ -93,6 +112,12 @@ const goalHorizons: { horizon: GoalHorizon; label: string }[] = [
   { horizon: "month", label: "Month" },
   { horizon: "year", label: "Year" },
   { horizon: "someday", label: "Someday" },
+];
+
+const historyPresets = [
+  { days: 7, label: "7 days" },
+  { days: 30, label: "30 days" },
+  { days: 90, label: "3 months" },
 ];
 
 function emptyGoalLists(): GoalLists {
@@ -137,6 +162,25 @@ function formattedDate(date: string) {
     month: "long",
     weekday: "long",
   }).format(new Date(`${date}T12:00:00`));
+}
+
+function shortDate(date: string) {
+  return new Intl.DateTimeFormat("en-GB", {
+    day: "numeric",
+    month: "short",
+    year: "numeric",
+  }).format(new Date(`${date}T12:00:00`));
+}
+
+function shiftDate(date: string, days: number) {
+  const shifted = new Date(`${date}T12:00:00.000Z`);
+  shifted.setUTCDate(shifted.getUTCDate() + days);
+  return shifted.toISOString().slice(0, 10);
+}
+
+function historyRange(today: string, days: number) {
+  const end = shiftDate(today, -1);
+  return { start: shiftDate(end, 1 - days), end };
 }
 
 function goalPeriodLabel(goal: Goal) {
@@ -1142,16 +1186,196 @@ function NeedsReviewGoal({
   );
 }
 
-function PlaceholderPage({ route }: { route: "history" }) {
-  const text = {
-    history: ["History", "Past Done actions will live here."],
-  }[route];
+function HistoryPage({ today }: { today?: string }) {
+  const [preset, setPreset] = useState<number | "custom">(30);
+  const [start, setStart] = useState("");
+  const [end, setEnd] = useState("");
+  const [selectedValue, setSelectedValue] = useState<string>();
+  const [data, setData] = useState<HistoryData>();
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+  const historyRequest = useRef(0);
+
+  const loadHistory = useCallback(async (
+    nextStart: string,
+    nextEnd: string,
+    value?: string,
+  ) => {
+    const request = ++historyRequest.current;
+    setError("");
+    setLoading(true);
+    try {
+      const query = new URLSearchParams({ start: nextStart, end: nextEnd });
+      if (value) query.set("value", value);
+      const nextData = await api<HistoryData>(`/api/history?${query}`);
+      if (request === historyRequest.current) setData(nextData);
+    } catch (caught) {
+      if (request === historyRequest.current) {
+        setError(caught instanceof Error ? caught.message : "Could not load History.");
+      }
+    } finally {
+      if (request === historyRequest.current) setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!today) return;
+    const range = historyRange(today, 30);
+    setStart(range.start);
+    setEnd(range.end);
+    void loadHistory(range.start, range.end);
+  }, [loadHistory, today]);
+
+  function choosePreset(days: number) {
+    if (!today) return;
+    const range = historyRange(today, days);
+    setPreset(days);
+    setStart(range.start);
+    setEnd(range.end);
+    setSelectedValue(undefined);
+    void loadHistory(range.start, range.end);
+  }
+
+  function applyCustomRange(event: FormEvent) {
+    event.preventDefault();
+    const lastPastDate = today ? shiftDate(today, -1) : "";
+    if (!start || !end || start > end || end > lastPastDate) {
+      setError("Choose a past range, from the first date to the last.");
+      return;
+    }
+    setSelectedValue(undefined);
+    void loadHistory(start, end);
+  }
+
+  function filterBy(value?: string) {
+    setSelectedValue(value);
+    void loadHistory(start, end, value);
+  }
 
   return (
-    <main className="page narrow-page placeholder-page">
-      <p className="eyebrow">{text[0]}</p>
-      <h1>{text[0]}</h1>
-      <p>{text[1]} This part comes later.</p>
+    <main className="page history-page">
+      <header className="history-page-heading">
+        <div className="page-heading">
+          <p className="eyebrow">History</p>
+          <h1>Done actions</h1>
+          <p>Only past actions marked Done.</p>
+        </div>
+        <span className="read-only-label">Read only</span>
+      </header>
+
+      <section className="history-range" aria-label="History date range">
+        <div className="history-presets" role="group" aria-label="Date range presets">
+          {historyPresets.map((item) => (
+            <button
+              aria-pressed={preset === item.days}
+              className="history-preset"
+              disabled={!today}
+              key={item.days}
+              onClick={() => choosePreset(item.days)}
+              type="button"
+            >
+              {item.label}
+            </button>
+          ))}
+          <button
+            aria-pressed={preset === "custom"}
+            className="history-preset"
+            disabled={!today}
+            onClick={() => setPreset("custom")}
+            type="button"
+          >
+            Custom
+          </button>
+        </div>
+        {preset === "custom" && (
+          <form className="custom-history-range" onSubmit={applyCustomRange}>
+            <label className="field">
+              <span>From</span>
+              <input
+                max={today ? shiftDate(today, -1) : undefined}
+                onChange={(event) => setStart(event.target.value)}
+                required
+                type="date"
+                value={start}
+              />
+            </label>
+            <label className="field">
+              <span>To</span>
+              <input
+                max={today ? shiftDate(today, -1) : undefined}
+                onChange={(event) => setEnd(event.target.value)}
+                required
+                type="date"
+                value={end}
+              />
+            </label>
+            <button className="quiet-button" type="submit">Show range</button>
+          </form>
+        )}
+      </section>
+
+      {error && <p className="form-error history-error" role="alert">{error}</p>}
+      {loading ? (
+        <p className="notice" aria-live="polite">Loading History…</p>
+      ) : !data?.actions.length && !data?.counts.length ? (
+        <p className="history-empty">No Done actions in this period.</p>
+      ) : data ? (
+        <section aria-labelledby="history-actions-title">
+          <header className="history-summary">
+            <div>
+              <h2 id="history-actions-title">Done actions</h2>
+              <p>{shortDate(data.start)} to {shortDate(data.end)}</p>
+            </div>
+            <span>{data.actions.length} shown</span>
+          </header>
+          <div className="history-value-filters" aria-label="Filter by Value" role="group">
+            <button
+              aria-pressed={!selectedValue}
+              className="history-value-filter"
+              onClick={() => filterBy()}
+              type="button"
+            >
+              All
+            </button>
+            {data.counts.map((count) => (
+              <button
+                aria-pressed={selectedValue === count.key}
+                className="history-value-filter"
+                key={count.key}
+                onClick={() => filterBy(count.key)}
+                type="button"
+              >
+                <span>
+                  {count.name}
+                  {count.deleted && <small>Deleted Value</small>}
+                </span>
+                <strong aria-label={`${count.count} Done actions`}>{count.count}</strong>
+              </button>
+            ))}
+          </div>
+          {data.actions.length ? (
+            <div className="history-stream">
+              {data.actions.map((action) => (
+                <article className="history-row" key={action.id}>
+                  <div className="history-row-values">
+                    {action.values.map((value) => (
+                      <span key={value.key}>
+                        {value.name}
+                        {value.deleted && <small>Deleted Value</small>}
+                      </span>
+                    ))}
+                  </div>
+                  <p>{action.text}</p>
+                  <time dateTime={action.date}>{shortDate(action.date)}</time>
+                </article>
+              ))}
+            </div>
+          ) : (
+            <p className="history-empty">No Done actions for this Value.</p>
+          )}
+          <p className="history-note">Counts show how many Done actions included each Value.</p>
+        </section>
+      ) : null}
     </main>
   );
 }
@@ -1630,7 +1854,7 @@ export default function App() {
         />
       )}
       {route === "settings" && <SettingsPage data={today} saveTimeZone={saveTimeZone} />}
-      {route === "history" && <PlaceholderPage route={route} />}
+      {route === "history" && <HistoryPage today={today?.date} />}
       <ActionDialog
         close={() => setActionTarget(undefined)}
         remove={removeAction}
