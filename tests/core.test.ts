@@ -24,6 +24,35 @@ async function createValue(app: ReturnType<typeof createApp>, name: string) {
   return (await response.json<{ value: { id: string } }>()).value.id;
 }
 
+type ListedValue = {
+  id: string;
+  name: string;
+  meaning: string | null;
+  status: "active" | "paused";
+  position: number;
+};
+
+async function listedValues(app: ReturnType<typeof createApp>) {
+  const response = await request(app, "/api/values");
+  expect(response.status).toBe(200);
+  return (await response.json<{ values: ListedValue[] }>()).values;
+}
+
+async function createAction(
+  app: ReturnType<typeof createApp>,
+  primaryValueId: string,
+  text: string,
+  done: boolean,
+  extraValueIds: string[] = [],
+) {
+  const response = await request(app, `/api/values/${primaryValueId}/actions`, {
+    method: "POST",
+    body: JSON.stringify({ text, done, extraValueIds }),
+  });
+  expect(response.status).toBe(201);
+  return (await response.json<{ action: { id: string } }>()).action.id;
+}
+
 beforeEach(async () => {
   await env.DB.batch([
     env.DB.prepare("DELETE FROM daily_action_values"),
@@ -281,6 +310,370 @@ describe("first Value-aligned Action", () => {
         })
       ).status,
     ).toBe(400);
+  });
+});
+
+describe("fluid Values", () => {
+  it("lists Active and Paused Values in one stable order", async () => {
+    const app = createApp(now);
+    const careId = await createValue(app, "Care");
+    const connectionId = await createValue(app, "Connection");
+    const learningId = await createValue(app, "Learning");
+
+    const pauseResponse = await request(app, `/api/values/${connectionId}`, {
+      method: "PATCH",
+      body: JSON.stringify({ status: "paused" }),
+    });
+    expect(pauseResponse.status).toBe(200);
+
+    expect(await listedValues(app)).toEqual([
+      {
+        id: careId,
+        name: "Care",
+        meaning: null,
+        status: "active",
+        position: 0,
+      },
+      {
+        id: connectionId,
+        name: "Connection",
+        meaning: null,
+        status: "paused",
+        position: 1,
+      },
+      {
+        id: learningId,
+        name: "Learning",
+        meaning: null,
+        status: "active",
+        position: 2,
+      },
+    ]);
+  });
+
+  it("edits a Value and renames its existing action snapshots", async () => {
+    const app = createApp(now);
+    const valueId = await createValue(app, "Rest");
+    await request(app, `/api/values/${valueId}/actions`, {
+      method: "POST",
+      body: JSON.stringify({ text: "Took a real break", done: true }),
+    });
+
+    const response = await request(app, `/api/values/${valueId}`, {
+      method: "PATCH",
+      body: JSON.stringify({
+        name: "Care",
+        meaning: "Treat myself gently",
+      }),
+    });
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({
+      value: {
+        id: valueId,
+        name: "Care",
+        meaning: "Treat myself gently",
+        status: "active",
+        position: 0,
+      },
+    });
+    expect((await listedValues(app))[0]).toEqual({
+      id: valueId,
+      name: "Care",
+      meaning: "Treat myself gently",
+      status: "active",
+      position: 0,
+    });
+    expect(
+      await env.DB.prepare(
+        "SELECT value_name FROM daily_action_values WHERE value_id = ?",
+      )
+        .bind(valueId)
+        .first(),
+    ).toEqual({ value_name: "Care" });
+  });
+
+  it("reorders the complete Value list and rejects partial lists", async () => {
+    const app = createApp(now);
+    const careId = await createValue(app, "Care");
+    const connectionId = await createValue(app, "Connection");
+    const learningId = await createValue(app, "Learning");
+
+    expect(
+      (
+        await request(app, "/api/values/order", {
+          method: "PUT",
+          body: JSON.stringify({ ids: [learningId, careId] }),
+        })
+      ).status,
+    ).toBe(400);
+    expect(
+      (
+        await request(app, "/api/values/order", {
+          method: "PUT",
+          body: JSON.stringify({ ids: [learningId, careId, "missing"] }),
+        })
+      ).status,
+    ).toBe(400);
+    expect(
+      (
+        await request(app, "/api/values/order", {
+          method: "PUT",
+          body: JSON.stringify({ ids: [learningId, learningId, careId] }),
+        })
+      ).status,
+    ).toBe(400);
+
+    const response = await request(app, "/api/values/order", {
+      method: "PUT",
+      body: JSON.stringify({ ids: [learningId, careId, connectionId] }),
+    });
+    expect(response.status).toBe(200);
+    expect((await listedValues(app)).map(({ id, position }) => ({ id, position }))).toEqual([
+      { id: learningId, position: 0 },
+      { id: careId, position: 1 },
+      { id: connectionId, position: 2 },
+    ]);
+    const today = await (await request(app, "/api/today")).json<{
+      values: { id: string }[];
+    }>();
+    expect(today.values.map(({ id }) => id)).toEqual([
+      learningId,
+      careId,
+      connectionId,
+    ]);
+  });
+
+  it("pauses and restores a Value without losing its place, menu, or Done actions", async () => {
+    const app = createApp(now);
+    const careId = await createValue(app, "Care");
+    const connectionId = await createValue(app, "Connection");
+    const learningId = await createValue(app, "Learning");
+    await env.DB.prepare(
+      `INSERT INTO action_menu_entries
+         (id, value_id, text, position, created_at, updated_at)
+       VALUES ('menu-care', ?, 'Take a break', 0, ?, ?)`,
+    )
+      .bind(careId, now().toISOString(), now().toISOString())
+      .run();
+
+    const plannedPrimaryId = await createAction(
+      app,
+      careId,
+      "Rest later",
+      false,
+    );
+    const plannedExtraId = await createAction(
+      app,
+      connectionId,
+      "Message someone",
+      false,
+      [careId],
+    );
+    const donePrimaryId = await createAction(app, careId, "Rested", true);
+    const doneExtraId = await createAction(
+      app,
+      connectionId,
+      "Had a kind talk",
+      true,
+      [careId],
+    );
+
+    expect(
+      (
+        await request(app, `/api/values/${careId}`, {
+          method: "PATCH",
+          body: JSON.stringify({ status: "paused" }),
+        })
+      ).status,
+    ).toBe(200);
+    expect(await listedValues(app)).toEqual([
+      expect.objectContaining({ id: careId, status: "paused", position: 0 }),
+      expect.objectContaining({ id: connectionId, status: "active", position: 1 }),
+      expect.objectContaining({ id: learningId, status: "active", position: 2 }),
+    ]);
+
+    const storedActions = await env.DB.prepare(
+      "SELECT id, status FROM daily_actions ORDER BY text",
+    ).all<{ id: string; status: string }>();
+    expect(storedActions.results.map(({ id }) => id).sort()).toEqual(
+      [plannedExtraId, donePrimaryId, doneExtraId].sort(),
+    );
+    expect(storedActions.results.some(({ id }) => id === plannedPrimaryId)).toBe(false);
+    expect(
+      await env.DB.prepare(
+        "SELECT value_id FROM daily_action_values WHERE action_id = ? AND value_id = ?",
+      )
+        .bind(plannedExtraId, careId)
+        .first(),
+    ).toBeNull();
+    expect(
+      await env.DB.prepare(
+        "SELECT value_id FROM daily_action_values WHERE action_id = ? AND value_id = ?",
+      )
+        .bind(doneExtraId, careId)
+        .first(),
+    ).toEqual({ value_id: careId });
+    expect(
+      await env.DB.prepare(
+        "SELECT id FROM action_menu_entries WHERE value_id = ?",
+      )
+        .bind(careId)
+        .first(),
+    ).toEqual({ id: "menu-care" });
+
+    let today = await (await request(app, "/api/today")).json<{
+      values: { id: string; actions: { id: string }[] }[];
+    }>();
+    expect(today.values.map(({ id }) => id)).toEqual([connectionId, learningId]);
+
+    expect(
+      (
+        await request(app, `/api/values/${careId}`, {
+          method: "PATCH",
+          body: JSON.stringify({ status: "active" }),
+        })
+      ).status,
+    ).toBe(200);
+    today = await (await request(app, "/api/today")).json<typeof today>();
+    expect(today.values.map(({ id }) => id)).toEqual([
+      careId,
+      connectionId,
+      learningId,
+    ]);
+    expect(today.values[0].actions.map(({ id }) => id)).toEqual([donePrimaryId]);
+    expect(
+      today.values[1].actions.some(({ id }) => id === plannedExtraId),
+    ).toBe(true);
+    expect(
+      await env.DB.prepare(
+        "SELECT id FROM action_menu_entries WHERE value_id = ?",
+      )
+        .bind(careId)
+        .first(),
+    ).toEqual({ id: "menu-care" });
+  });
+
+  it("deletes a Value and its menu while preserving Done snapshots", async () => {
+    const app = createApp(now);
+    const careId = await createValue(app, "Care");
+    const connectionId = await createValue(app, "Connection");
+    await env.DB.prepare(
+      `INSERT INTO action_menu_entries
+         (id, value_id, text, position, created_at, updated_at)
+       VALUES ('menu-care', ?, 'Take a break', 0, ?, ?)`,
+    )
+      .bind(careId, now().toISOString(), now().toISOString())
+      .run();
+
+    const plannedPrimaryId = await createAction(app, careId, "Rest later", false);
+    const plannedExtraId = await createAction(
+      app,
+      connectionId,
+      "Message someone",
+      false,
+      [careId],
+    );
+    const donePrimaryId = await createAction(app, careId, "Rested", true);
+    const doneExtraId = await createAction(
+      app,
+      connectionId,
+      "Had a kind talk",
+      true,
+      [careId],
+    );
+
+    const response = await request(app, `/api/values/${careId}`, {
+      method: "DELETE",
+    });
+    expect(response.status).toBe(204);
+    expect((await listedValues(app)).map(({ id }) => id)).toEqual([connectionId]);
+
+    const storedActions = await env.DB.prepare(
+      "SELECT id FROM daily_actions ORDER BY id",
+    ).all<{ id: string }>();
+    expect(storedActions.results.map(({ id }) => id).sort()).toEqual(
+      [plannedExtraId, donePrimaryId, doneExtraId].sort(),
+    );
+    expect(storedActions.results.some(({ id }) => id === plannedPrimaryId)).toBe(false);
+    expect(
+      await env.DB.prepare(
+        "SELECT value_id FROM daily_action_values WHERE action_id = ? AND value_name = 'Care'",
+      )
+        .bind(plannedExtraId)
+        .first(),
+    ).toBeNull();
+    expect(
+      await env.DB.prepare(
+        `SELECT value_id, value_name, is_primary
+         FROM daily_action_values
+         WHERE action_id = ? AND value_name = 'Care'`,
+      )
+        .bind(donePrimaryId)
+        .first(),
+    ).toEqual({ value_id: null, value_name: "Care", is_primary: 1 });
+    expect(
+      await env.DB.prepare(
+        `SELECT value_id, value_name, is_primary
+         FROM daily_action_values
+         WHERE action_id = ? AND value_name = 'Care'`,
+      )
+        .bind(doneExtraId)
+        .first(),
+    ).toEqual({ value_id: null, value_name: "Care", is_primary: 0 });
+    expect(
+      await env.DB.prepare("SELECT id FROM action_menu_entries WHERE value_id = ?")
+        .bind(careId)
+        .first(),
+    ).toBeNull();
+
+    const today = await (await request(app, "/api/today")).json<{
+      values: { id: string; actions: { id: string }[] }[];
+    }>();
+    expect(today.values).toEqual([
+      expect.objectContaining({
+        id: connectionId,
+        actions: expect.arrayContaining([
+          expect.objectContaining({ id: plannedExtraId }),
+          expect.objectContaining({ id: doneExtraId }),
+        ]),
+      }),
+    ]);
+  });
+
+  it("rejects invalid Value changes without changing stored data", async () => {
+    const app = createApp(now);
+    const careId = await createValue(app, "Care");
+    await createValue(app, "Connection");
+
+    for (const body of [
+      {},
+      { name: "  " },
+      { meaning: "x".repeat(501) },
+      { status: "deleted" },
+    ]) {
+      expect(
+        (
+          await request(app, `/api/values/${careId}`, {
+            method: "PATCH",
+            body: JSON.stringify(body),
+          })
+        ).status,
+      ).toBe(400);
+    }
+    expect(
+      (
+        await request(app, `/api/values/${careId}`, {
+          method: "PATCH",
+          body: JSON.stringify({ name: "connection" }),
+        })
+      ).status,
+    ).toBe(409);
+    expect(
+      (await request(app, "/api/values/missing", { method: "DELETE" })).status,
+    ).toBe(404);
+    expect((await listedValues(app))[0]).toEqual(
+      expect.objectContaining({ id: careId, name: "Care", meaning: null }),
+    );
   });
 });
 

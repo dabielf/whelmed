@@ -8,6 +8,7 @@ type ValueRow = {
   id: string;
   name: string;
   meaning: string | null;
+  status: "active" | "paused";
   position: number;
 };
 
@@ -84,6 +85,10 @@ function readText(
   return text;
 }
 
+function isUniqueConstraint(error: unknown) {
+  return String(error).toLowerCase().includes("unique constraint failed");
+}
+
 function readExtraValueIds(value: unknown, primaryValueId: string) {
   if (
     !Array.isArray(value) ||
@@ -111,6 +116,24 @@ async function activeValues(database: D1Database, ids: string[]) {
     .bind(...ids)
     .all<LinkedValue>();
   return results;
+}
+
+function plannedValueCleanup(database: D1Database, valueId: string) {
+  return [
+    database.prepare(
+      `DELETE FROM daily_actions
+       WHERE status = 'planned' AND id IN (
+         SELECT action_id FROM daily_action_values
+         WHERE value_id = ? AND is_primary = 1
+       )`,
+    ).bind(valueId),
+    database.prepare(
+      `DELETE FROM daily_action_values
+       WHERE value_id = ? AND is_primary = 0 AND action_id IN (
+         SELECT id FROM daily_actions WHERE status = 'planned'
+       )`,
+    ).bind(valueId),
+  ];
 }
 
 async function readObject(context: AppContext) {
@@ -290,6 +313,140 @@ export function createApp(now: () => Date = () => new Date()) {
     });
   });
 
+  app.get("/api/values", async (context) => {
+    const { results } = await context.env.DB.prepare(
+      `SELECT id, name, meaning, status, position
+       FROM app_values
+       ORDER BY position, created_at`,
+    ).all<ValueRow>();
+    return context.json({ values: results });
+  });
+
+  app.put("/api/values/order", async (context) => {
+    const body = await readObject(context);
+    const ids = body?.ids;
+    if (
+      !Array.isArray(ids) ||
+      ids.length > 1_000 ||
+      ids.some((id) => typeof id !== "string" || !id) ||
+      new Set(ids).size !== ids.length
+    ) {
+      return apiError(context, 400, "Send every Value once.");
+    }
+
+    const { results: stored } = await context.env.DB.prepare(
+      "SELECT id FROM app_values",
+    ).all<{ id: string }>();
+    const storedIds = new Set(stored.map(({ id }) => id));
+    if (ids.length !== stored.length || ids.some((id) => !storedIds.has(id))) {
+      return apiError(context, 400, "Send every Value once.");
+    }
+
+    if (ids.length) {
+      const timestamp = now().toISOString();
+      await context.env.DB.batch(
+        ids.map((id, position) =>
+          context.env.DB.prepare(
+            "UPDATE app_values SET position = ?, updated_at = ? WHERE id = ?",
+          ).bind(position, timestamp, id),
+        ),
+      );
+    }
+
+    const { results: values } = await context.env.DB.prepare(
+      `SELECT id, name, meaning, status, position
+       FROM app_values
+       ORDER BY position, created_at`,
+    ).all<ValueRow>();
+    return context.json({ values });
+  });
+
+  app.patch("/api/values/:valueId", async (context) => {
+    const body = await readObject(context);
+    if (
+      !body ||
+      (body.name === undefined &&
+        body.meaning === undefined &&
+        body.status === undefined)
+    ) {
+      return apiError(context, 400, "Choose a Value change.");
+    }
+    const valueId = context.req.param("valueId");
+    const current = await context.env.DB.prepare(
+      "SELECT id, name, meaning, status, position FROM app_values WHERE id = ?",
+    )
+      .bind(valueId)
+      .first<ValueRow>();
+    if (!current) return apiError(context, 404, "Value not found.");
+
+    const name = body?.name === undefined ? current.name : readText(body.name, 80);
+    if (!name) {
+      return apiError(context, 400, "Use a Value name from 1 to 80 characters.");
+    }
+
+    let meaning = current.meaning;
+    if (body?.meaning !== undefined) {
+      if (typeof body.meaning !== "string" || body.meaning.trim().length > 500) {
+        return apiError(
+          context,
+          400,
+          "Personal meaning must be 500 characters or fewer.",
+        );
+      }
+      meaning = body.meaning.trim() || null;
+    }
+
+    const status = body?.status === undefined ? current.status : body.status;
+    if (status !== "active" && status !== "paused") {
+      return apiError(context, 400, "Choose Active or Paused.");
+    }
+
+    try {
+      const statements = [
+        context.env.DB.prepare(
+          `UPDATE app_values
+           SET name = ?, meaning = ?, status = ?, updated_at = ?
+           WHERE id = ?`,
+        ).bind(name, meaning, status, now().toISOString(), valueId),
+        context.env.DB.prepare(
+          "UPDATE daily_action_values SET value_name = ? WHERE value_id = ?",
+        ).bind(name, valueId),
+      ];
+      if (status === "paused") {
+        statements.push(...plannedValueCleanup(context.env.DB, valueId));
+      }
+      await context.env.DB.batch(statements);
+    } catch (error) {
+      if (isUniqueConstraint(error)) {
+        return apiError(context, 409, "That Value already exists.");
+      }
+      throw error;
+    }
+
+    const value = await context.env.DB.prepare(
+      "SELECT id, name, meaning, status, position FROM app_values WHERE id = ?",
+    )
+      .bind(valueId)
+      .first<ValueRow>();
+    return context.json({ value });
+  });
+
+  app.delete("/api/values/:valueId", async (context) => {
+    const valueId = context.req.param("valueId");
+    const value = await context.env.DB.prepare(
+      "SELECT id FROM app_values WHERE id = ?",
+    )
+      .bind(valueId)
+      .first<{ id: string }>();
+    if (!value) return apiError(context, 404, "Value not found.");
+
+    await context.env.DB.batch([
+      ...plannedValueCleanup(context.env.DB, valueId),
+      context.env.DB.prepare("DELETE FROM app_values WHERE id = ?").bind(valueId),
+    ]);
+    return context.body(null, 204);
+  });
+
   app.post("/api/values", async (context) => {
     const body = await readObject(context);
     const name = readText(body?.name, 80);
@@ -330,7 +487,7 @@ export function createApp(now: () => Date = () => new Date()) {
         .bind(id, name, meaning, timestamp, timestamp)
         .run();
     } catch (error) {
-      if (String(error).toLowerCase().includes("unique constraint failed")) {
+      if (isUniqueConstraint(error)) {
         return apiError(context, 409, "That Value already exists.");
       }
       throw error;

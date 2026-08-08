@@ -12,11 +12,15 @@ type Action = {
   }[];
 };
 
-type Value = {
+type ManagedValue = {
   id: string;
   name: string;
   meaning: string | null;
   position: number;
+  status: "active" | "paused";
+};
+
+type Value = Omit<ManagedValue, "status"> & {
   actions: Action[];
 };
 
@@ -216,11 +220,22 @@ function TodayPage({
 }
 
 function ValuesPage({
-  data,
+  values,
+  loading,
   createValue,
+  updateValue,
+  removeValue,
+  moveValue,
 }: {
-  data?: Today;
+  values: ManagedValue[];
+  loading: boolean;
   createValue: (name: string, meaning: string) => Promise<void>;
+  updateValue: (
+    id: string,
+    changes: { name?: string; meaning?: string; status?: "active" | "paused" },
+  ) => Promise<void>;
+  removeValue: (id: string) => Promise<void>;
+  moveValue: (id: string, direction: -1 | 1) => Promise<void>;
 }) {
   const [name, setName] = useState("");
   const [meaning, setMeaning] = useState("");
@@ -233,6 +248,9 @@ function ValuesPage({
     setSaving(true);
     try {
       await createValue(name, meaning);
+      setName("");
+      setMeaning("");
+      setSaving(false);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "Could not create the Value.");
       setSaving(false);
@@ -243,52 +261,217 @@ function ValuesPage({
     <main className="page narrow-page">
       <header className="page-heading">
         <p className="eyebrow">Values</p>
-        <h1>Create a Value</h1>
-        <p>Choose a short name. Add what it means to you if that helps.</p>
+        <h1>Your Values</h1>
+        <p>Keep what fits now. You can change this list at any time.</p>
       </header>
 
-      <form className="form-card" onSubmit={submit}>
-        <label className="field">
-          <span>Short name</span>
-          <input
-            autoFocus
-            maxLength={80}
-            onChange={(event) => setName(event.target.value)}
-            placeholder="For example: Care"
-            required
-            value={name}
-          />
-        </label>
-        <label className="field">
-          <span>Personal meaning <small>Optional</small></span>
-          <textarea
-            maxLength={500}
-            onChange={(event) => setMeaning(event.target.value)}
-            placeholder="What does this Value mean in your life?"
-            rows={4}
-            value={meaning}
-          />
-        </label>
-        {error && <p className="form-error" role="alert">{error}</p>}
-        <button className="primary-button" disabled={saving} type="submit">
-          {saving ? "Creating…" : "Create Value"}
-        </button>
-      </form>
+      {loading ? (
+        <p className="notice" aria-live="polite">Loading Values…</p>
+      ) : (
+        <ValueList
+          moveValue={moveValue}
+          removeValue={removeValue}
+          updateValue={updateValue}
+          values={values}
+        />
+      )}
 
-      {data?.values.length ? (
-        <section className="saved-values" aria-labelledby="saved-values-title">
-          <h2 id="saved-values-title">Active Values</h2>
-          <ul>
-            {data.values.map((value) => (
-              <li key={value.id}>
-                <strong>{value.name}</strong>
-                {value.meaning && <span>{value.meaning}</span>}
-              </li>
-            ))}
-          </ul>
-        </section>
-      ) : null}
+      <section className="create-value" aria-labelledby="create-value-title">
+        <h2 id="create-value-title">Add a Value</h2>
+        <p>Choose a short name. Add what it means to you if that helps.</p>
+        <form className="form-card" onSubmit={submit}>
+          <label className="field">
+            <span>Short name</span>
+            <input
+              maxLength={80}
+              onChange={(event) => setName(event.target.value)}
+              placeholder="For example: Care"
+              required
+              value={name}
+            />
+          </label>
+          <label className="field">
+            <span>Personal meaning <small>Optional</small></span>
+            <textarea
+              maxLength={500}
+              onChange={(event) => setMeaning(event.target.value)}
+              placeholder="What does this Value mean in your life?"
+              rows={4}
+              value={meaning}
+            />
+          </label>
+          {error && <p className="form-error" role="alert">{error}</p>}
+          <button className="primary-button" disabled={saving} type="submit">
+            {saving ? "Creating…" : "Create Value"}
+          </button>
+        </form>
+      </section>
     </main>
+  );
+}
+
+function ValueList({
+  values,
+  updateValue,
+  removeValue,
+  moveValue,
+}: {
+  values: ManagedValue[];
+  updateValue: (
+    id: string,
+    changes: { name?: string; meaning?: string; status?: "active" | "paused" },
+  ) => Promise<void>;
+  removeValue: (id: string) => Promise<void>;
+  moveValue: (id: string, direction: -1 | 1) => Promise<void>;
+}) {
+  const active = values.filter((value) => value.status === "active");
+  const paused = values.filter((value) => value.status === "paused");
+  const editors = (items: ManagedValue[]) => (
+    <ul className="value-list">
+      {items.map((value, index) => (
+        <ValueEditor
+          canMoveDown={index < items.length - 1}
+          canMoveUp={index > 0}
+          key={value.id}
+          moveValue={moveValue}
+          removeValue={removeValue}
+          updateValue={updateValue}
+          value={value}
+        />
+      ))}
+    </ul>
+  );
+
+  return (
+    <section className="managed-values" aria-labelledby="active-values-title">
+      <h2 id="active-values-title">Active Values</h2>
+      {active.length ? editors(active) : <p className="notice">No Active Values.</p>}
+      <details className="paused-values">
+        <summary>Paused Values <span>{paused.length}</span></summary>
+        {paused.length ? editors(paused) : <p className="notice">No Paused Values.</p>}
+      </details>
+    </section>
+  );
+}
+
+function ValueEditor({
+  value,
+  canMoveUp,
+  canMoveDown,
+  updateValue,
+  removeValue,
+  moveValue,
+}: {
+  value: ManagedValue;
+  canMoveUp: boolean;
+  canMoveDown: boolean;
+  updateValue: (
+    id: string,
+    changes: { name?: string; meaning?: string; status?: "active" | "paused" },
+  ) => Promise<void>;
+  removeValue: (id: string) => Promise<void>;
+  moveValue: (id: string, direction: -1 | 1) => Promise<void>;
+}) {
+  const [name, setName] = useState(value.name);
+  const [meaning, setMeaning] = useState(value.meaning ?? "");
+  const [error, setError] = useState("");
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    setName(value.name);
+    setMeaning(value.meaning ?? "");
+  }, [value.name, value.meaning]);
+
+  async function run(change: () => Promise<void>) {
+    setError("");
+    setSaving(true);
+    try {
+      await change();
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "Could not change the Value.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function submit(event: FormEvent) {
+    event.preventDefault();
+    await run(() => updateValue(value.id, { name, meaning }));
+  }
+
+  async function remove() {
+    if (!window.confirm(`Delete ${value.name}? Its saved Action Menu will also be deleted.`)) return;
+    await run(() => removeValue(value.id));
+  }
+
+  return (
+    <li>
+      <details className="managed-value" name="managed-value">
+        <summary>
+          <strong>{value.name}</strong>
+          <span>{value.meaning || "No personal meaning yet."}</span>
+        </summary>
+        <form onSubmit={submit}>
+          <label className="field">
+            <span>Short name</span>
+            <input
+              maxLength={80}
+              onChange={(event) => setName(event.target.value)}
+              required
+              value={name}
+            />
+          </label>
+          <label className="field">
+            <span>Personal meaning <small>Optional</small></span>
+            <textarea
+              maxLength={500}
+              onChange={(event) => setMeaning(event.target.value)}
+              rows={3}
+              value={meaning}
+            />
+          </label>
+          {error && <p className="form-error" role="alert">{error}</p>}
+          <div className="value-controls">
+            <span className="order-controls" aria-label={`Order ${value.name}`}>
+              <button
+                className="quiet-button"
+                disabled={!canMoveUp || saving}
+                onClick={() => void run(() => moveValue(value.id, -1))}
+                type="button"
+              >
+                Move up
+              </button>
+              <button
+                className="quiet-button"
+                disabled={!canMoveDown || saving}
+                onClick={() => void run(() => moveValue(value.id, 1))}
+                type="button"
+              >
+                Move down
+              </button>
+            </span>
+            <button className="primary-button" disabled={saving} type="submit">
+              Save changes
+            </button>
+          </div>
+          <div className="value-state-controls">
+            <button
+              className="quiet-button"
+              disabled={saving}
+              onClick={() => void run(() => updateValue(value.id, {
+                status: value.status === "active" ? "paused" : "active",
+              }))}
+              type="button"
+            >
+              {value.status === "active" ? "Pause Value" : "Restore Value"}
+            </button>
+            <button className="danger-button" disabled={saving} onClick={() => void remove()} type="button">
+              Delete Value
+            </button>
+          </div>
+        </form>
+      </details>
+    </li>
   );
 }
 
@@ -564,6 +747,8 @@ export default function App() {
   const [route, setRoute] = useState<Route>(routeFromPath);
   const [today, setToday] = useState<Today>();
   const [loading, setLoading] = useState(true);
+  const [values, setValues] = useState<ManagedValue[]>([]);
+  const [valuesLoading, setValuesLoading] = useState(true);
   const [error, setError] = useState("");
   const [actionTarget, setActionTarget] = useState<ActionTarget>();
 
@@ -578,12 +763,27 @@ export default function App() {
     }
   }, []);
 
+  const loadValues = useCallback(async () => {
+    setError("");
+    try {
+      setValues((await api<{ values: ManagedValue[] }>("/api/values")).values);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "Could not load Values.");
+    } finally {
+      setValuesLoading(false);
+    }
+  }, []);
+
   useEffect(() => {
     void loadToday();
     const onPopState = () => setRoute(routeFromPath());
     window.addEventListener("popstate", onPopState);
     return () => window.removeEventListener("popstate", onPopState);
   }, [loadToday]);
+
+  useEffect(() => {
+    if (route === "values") void loadValues();
+  }, [loadValues, route]);
 
   function navigate(nextRoute: Route) {
     window.history.pushState({}, "", `/${nextRoute}`);
@@ -596,8 +796,42 @@ export default function App() {
       body: JSON.stringify({ name, meaning }),
       method: "POST",
     });
-    await loadToday();
-    navigate("today");
+    await Promise.all([loadToday(), loadValues()]);
+  }
+
+  async function updateValue(
+    id: string,
+    changes: { name?: string; meaning?: string; status?: "active" | "paused" },
+  ) {
+    await api(`/api/values/${id}`, {
+      body: JSON.stringify(changes),
+      method: "PATCH",
+    });
+    await Promise.all([loadToday(), loadValues()]);
+  }
+
+  async function removeValue(id: string) {
+    await api(`/api/values/${id}`, { method: "DELETE" });
+    await Promise.all([loadToday(), loadValues()]);
+  }
+
+  async function moveValue(id: string, direction: -1 | 1) {
+    const value = values.find((item) => item.id === id);
+    if (!value) return;
+    const peers = values.filter((item) => item.status === value.status);
+    const peerIndex = peers.findIndex((item) => item.id === id);
+    const target = peers[peerIndex + direction];
+    if (!target) return;
+
+    const ids = values.map((item) => item.id);
+    const currentIndex = ids.indexOf(id);
+    const targetIndex = ids.indexOf(target.id);
+    [ids[currentIndex], ids[targetIndex]] = [ids[targetIndex], ids[currentIndex]];
+    await api("/api/values/order", {
+      body: JSON.stringify({ ids }),
+      method: "PUT",
+    });
+    await Promise.all([loadToday(), loadValues()]);
   }
 
   async function saveAction(
@@ -638,7 +872,16 @@ export default function App() {
           openAction={(value, action) => setActionTarget({ value, action })}
         />
       )}
-      {route === "values" && <ValuesPage createValue={createValue} data={today} />}
+      {route === "values" && (
+        <ValuesPage
+          createValue={createValue}
+          loading={valuesLoading}
+          moveValue={moveValue}
+          removeValue={removeValue}
+          updateValue={updateValue}
+          values={values}
+        />
+      )}
       {route === "settings" && <SettingsPage data={today} saveTimeZone={saveTimeZone} />}
       {route !== "today" && route !== "values" && route !== "settings" && <PlaceholderPage route={route} />}
       <ActionDialog
