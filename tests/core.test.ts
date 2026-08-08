@@ -8,9 +8,10 @@ function request(
   app: ReturnType<typeof createApp>,
   path: string,
   options: RequestInit = {},
+  timeZone = "Europe/Paris",
 ) {
   const headers = new Headers(options.headers);
-  headers.set("x-time-zone", "Europe/Paris");
+  if (timeZone) headers.set("x-time-zone", timeZone);
   if (options.body) headers.set("content-type", "application/json");
   return app.request(`http://localhost${path}`, { ...options, headers }, env);
 }
@@ -28,6 +29,9 @@ beforeEach(async () => {
     env.DB.prepare("DELETE FROM daily_action_values"),
     env.DB.prepare("DELETE FROM daily_actions"),
     env.DB.prepare("DELETE FROM app_values"),
+    env.DB.prepare(
+      "UPDATE settings SET app_time_zone = NULL, updated_at = '2026-08-08T00:00:00.000Z' WHERE id = 1",
+    ),
   ]);
 });
 
@@ -44,6 +48,11 @@ describe("first Value-aligned Action", () => {
     let todayResponse = await request(app, "/api/today");
     expect(await todayResponse.json()).toEqual({
       date: "2026-08-08",
+      timeZone: {
+        appTimeZone: null,
+        effectiveTimeZone: "Europe/Paris",
+        needsConfirmation: true,
+      },
       values: [
         expect.objectContaining({
           id: value.id,
@@ -272,5 +281,154 @@ describe("first Value-aligned Action", () => {
         })
       ).status,
     ).toBe(400);
+  });
+});
+
+describe("App Time Zone", () => {
+  it("uses the browser Time Zone and reminds the person until one is saved", async () => {
+    const app = createApp(() => new Date("2026-08-08T23:30:00.000Z"));
+
+    const todayResponse = await request(
+      app,
+      "/api/today",
+      {},
+      "America/Vancouver",
+    );
+    expect(todayResponse.status).toBe(200);
+    expect(await todayResponse.json()).toEqual(
+      expect.objectContaining({
+        date: "2026-08-08",
+        timeZone: {
+          appTimeZone: null,
+          effectiveTimeZone: "America/Vancouver",
+          needsConfirmation: true,
+        },
+      }),
+    );
+
+    expect(await (await request(
+      app,
+      "/api/settings",
+      {},
+      "America/Vancouver",
+    )).json()).toEqual({
+      appTimeZone: null,
+      effectiveTimeZone: "America/Vancouver",
+      needsConfirmation: true,
+    });
+  });
+
+  it("saves a valid App Time Zone and uses it before the browser Time Zone", async () => {
+    const app = createApp(() => new Date("2026-08-08T23:30:00.000Z"));
+
+    expect((await request(app, "/api/today", {}, "Not/AZone")).status).toBe(400);
+    expect((await request(app, "/api/today", {}, "")).status).toBe(400);
+    expect((await request(app, "/api/settings", {
+      method: "PATCH",
+      body: JSON.stringify({ appTimeZone: "Mars/Olympus" }),
+    })).status).toBe(400);
+
+    const savedResponse = await request(app, "/api/settings", {
+      method: "PATCH",
+      body: JSON.stringify({ appTimeZone: "Pacific/Auckland" }),
+    });
+    expect(savedResponse.status).toBe(200);
+    expect(await savedResponse.json()).toEqual({
+      appTimeZone: "Pacific/Auckland",
+      effectiveTimeZone: "Pacific/Auckland",
+      needsConfirmation: false,
+    });
+
+    const todayResponse = await request(app, "/api/today", {}, "Not/AZone");
+    expect(todayResponse.status).toBe(200);
+    expect(await todayResponse.json()).toEqual(
+      expect.objectContaining({
+        date: "2026-08-09",
+        timeZone: {
+          appTimeZone: "Pacific/Auckland",
+          effectiveTimeZone: "Pacific/Auckland",
+          needsConfirmation: false,
+        },
+      }),
+    );
+  });
+
+  it("keeps past Done actions read-only and lazily removes old Planned actions", async () => {
+    let currentTime = new Date("2026-08-08T21:59:00.000Z");
+    const app = createApp(() => currentTime);
+    await request(app, "/api/settings", {
+      method: "PATCH",
+      body: JSON.stringify({ appTimeZone: "Europe/Paris" }),
+    });
+    const valueId = await createValue(app, "Care");
+    const actionPath = `/api/values/${valueId}/actions`;
+
+    const doneResponse = await request(app, actionPath, {
+      method: "POST",
+      body: JSON.stringify({ text: "Rested", done: true }),
+    }, "Pacific/Honolulu");
+    const { action: doneAction } = await doneResponse.json<{
+      action: { id: string };
+    }>();
+    const plannedResponse = await request(app, actionPath, {
+      method: "POST",
+      body: JSON.stringify({ text: "Read later", done: false }),
+    }, "Pacific/Honolulu");
+    const { action: plannedAction } = await plannedResponse.json<{
+      action: { id: string };
+    }>();
+
+    currentTime = new Date("2026-08-08T22:01:00.000Z");
+    const today = await (await request(
+      app,
+      "/api/today",
+      {},
+      "Pacific/Honolulu",
+    )).json<{
+      date: string;
+      values: { actions: unknown[] }[];
+    }>();
+    expect(today.date).toBe("2026-08-09");
+    expect(today.values[0].actions).toEqual([]);
+
+    const stored = await env.DB.prepare(
+      "SELECT id, action_date, status FROM daily_actions ORDER BY id",
+    ).all<{ id: string; action_date: string; status: string }>();
+    expect(stored.results).toEqual([
+      { id: doneAction.id, action_date: "2026-08-08", status: "done" },
+    ]);
+
+    expect((await request(app, `/api/actions/${doneAction.id}`, {
+      method: "PATCH",
+      body: JSON.stringify({
+        text: "Changed yesterday",
+        done: false,
+        primaryValueId: valueId,
+        extraValueIds: [],
+      }),
+    }, "Pacific/Honolulu")).status).toBe(404);
+    expect((await request(app, `/api/actions/${doneAction.id}`, {
+      method: "DELETE",
+    }, "Pacific/Honolulu")).status).toBe(404);
+    expect((await request(app, `/api/actions/${plannedAction.id}`, {
+      method: "DELETE",
+    }, "Pacific/Honolulu")).status).toBe(404);
+
+    const newResponse = await request(app, actionPath, {
+      method: "POST",
+      body: JSON.stringify({
+        text: "Today only",
+        done: true,
+        actionDate: "2026-08-08",
+      }),
+    }, "Pacific/Honolulu");
+    expect(newResponse.status).toBe(201);
+    const refreshedToday = await (await request(
+      app,
+      "/api/today",
+      {},
+      "Pacific/Honolulu",
+    )).json<typeof today>();
+    expect(refreshedToday.values[0].actions).toHaveLength(1);
   });
 });

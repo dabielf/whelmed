@@ -124,8 +124,8 @@ async function readObject(context: AppContext) {
   }
 }
 
-function timeZoneFrom(context: AppContext) {
-  const timeZone = context.req.header("x-time-zone");
+function readTimeZone(value: unknown) {
+  const timeZone = readText(value, 100);
   if (!timeZone) return undefined;
 
   try {
@@ -134,6 +134,22 @@ function timeZoneFrom(context: AppContext) {
   } catch {
     return undefined;
   }
+}
+
+async function timeZoneState(context: AppContext) {
+  const setting = await context.env.DB.prepare(
+    "SELECT app_time_zone FROM settings WHERE id = 1",
+  ).first<{ app_time_zone: string | null }>();
+  const appTimeZone = setting?.app_time_zone ?? null;
+  const effectiveTimeZone =
+    appTimeZone ?? readTimeZone(context.req.header("x-time-zone"));
+  if (!effectiveTimeZone) return undefined;
+
+  return {
+    appTimeZone,
+    effectiveTimeZone,
+    needsConfirmation: appTimeZone === null,
+  };
 }
 
 function dateInTimeZone(date: Date, timeZone: string) {
@@ -162,12 +178,17 @@ export function createApp(now: () => Date = () => new Date()) {
   });
 
   app.get("/api/today", async (context) => {
-    const timeZone = timeZoneFrom(context);
+    const timeZone = await timeZoneState(context);
     if (!timeZone) {
       return apiError(context, 400, "A valid browser time zone is required.");
     }
 
-    const date = dateInTimeZone(now(), timeZone);
+    const date = dateInTimeZone(now(), timeZone.effectiveTimeZone);
+    await context.env.DB.prepare(
+      "DELETE FROM daily_actions WHERE status = 'planned' AND action_date < ?",
+    )
+      .bind(date)
+      .run();
     const [{ results: values }, { results: actions }] = await Promise.all([
       context.env.DB.prepare(
         `SELECT id, name, meaning, position
@@ -229,6 +250,7 @@ export function createApp(now: () => Date = () => new Date()) {
 
     return context.json({
       date,
+      timeZone,
       values: values.map((value) => ({
         ...value,
         actions: [...groupedActions.values()].filter((action) =>
@@ -238,6 +260,33 @@ export function createApp(now: () => Date = () => new Date()) {
           ),
         ),
       })),
+    });
+  });
+
+  app.get("/api/settings", async (context) => {
+    const timeZone = await timeZoneState(context);
+    if (!timeZone) {
+      return apiError(context, 400, "A valid browser time zone is required.");
+    }
+    return context.json(timeZone);
+  });
+
+  app.patch("/api/settings", async (context) => {
+    const body = await readObject(context);
+    const appTimeZone = readTimeZone(body?.appTimeZone);
+    if (!appTimeZone) {
+      return apiError(context, 400, "Choose a valid IANA Time Zone.");
+    }
+
+    await context.env.DB.prepare(
+      "UPDATE settings SET app_time_zone = ?, updated_at = ? WHERE id = 1",
+    )
+      .bind(appTimeZone, now().toISOString())
+      .run();
+    return context.json({
+      appTimeZone,
+      effectiveTimeZone: appTimeZone,
+      needsConfirmation: false,
     });
   });
 
@@ -294,7 +343,7 @@ export function createApp(now: () => Date = () => new Date()) {
   });
 
   app.post("/api/values/:valueId/actions", async (context) => {
-    const timeZone = timeZoneFrom(context);
+    const timeZone = await timeZoneState(context);
     if (!timeZone) {
       return apiError(context, 400, "A valid browser time zone is required.");
     }
@@ -329,7 +378,7 @@ export function createApp(now: () => Date = () => new Date()) {
     const id = crypto.randomUUID();
     const currentTime = now();
     const timestamp = currentTime.toISOString();
-    const date = dateInTimeZone(currentTime, timeZone);
+    const date = dateInTimeZone(currentTime, timeZone.effectiveTimeZone);
     const status = body.done ? "done" : "planned";
 
     await context.env.DB.batch([
@@ -376,7 +425,7 @@ export function createApp(now: () => Date = () => new Date()) {
   });
 
   app.patch("/api/actions/:actionId", async (context) => {
-    const timeZone = timeZoneFrom(context);
+    const timeZone = await timeZoneState(context);
     if (!timeZone) {
       return apiError(context, 400, "A valid browser time zone is required.");
     }
@@ -402,7 +451,7 @@ export function createApp(now: () => Date = () => new Date()) {
     }
 
     const currentTime = now();
-    const date = dateInTimeZone(currentTime, timeZone);
+    const date = dateInTimeZone(currentTime, timeZone.effectiveTimeZone);
     const actionId = context.req.param("actionId");
     const action = await context.env.DB.prepare(
       `SELECT id FROM daily_actions WHERE id = ? AND action_date = ?`,
@@ -450,12 +499,12 @@ export function createApp(now: () => Date = () => new Date()) {
   });
 
   app.delete("/api/actions/:actionId", async (context) => {
-    const timeZone = timeZoneFrom(context);
+    const timeZone = await timeZoneState(context);
     if (!timeZone) {
       return apiError(context, 400, "A valid browser time zone is required.");
     }
 
-    const date = dateInTimeZone(now(), timeZone);
+    const date = dateInTimeZone(now(), timeZone.effectiveTimeZone);
     const result = await context.env.DB.prepare(
       `DELETE FROM daily_actions WHERE id = ? AND action_date = ?`,
     )

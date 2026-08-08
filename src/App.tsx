@@ -22,6 +22,11 @@ type Value = {
 
 type Today = {
   date: string;
+  timeZone: {
+    appTimeZone: string | null;
+    effectiveTimeZone: string;
+    needsConfirmation: boolean;
+  };
   values: Value[];
 };
 
@@ -41,6 +46,7 @@ const navigation: { route: Route; label: string }[] = [
 ];
 
 const browserTimeZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+const timeZones = Intl.supportedValuesOf("timeZone");
 
 function routeFromPath(): Route {
   const route = window.location.pathname.split("/").filter(Boolean)[0];
@@ -286,11 +292,83 @@ function ValuesPage({
   );
 }
 
-function PlaceholderPage({ route }: { route: Exclude<Route, "today" | "values"> }) {
+function SettingsPage({
+  data,
+  saveTimeZone,
+}: {
+  data?: Today;
+  saveTimeZone: (timeZone: string) => Promise<void>;
+}) {
+  const currentTimeZone =
+    data?.timeZone.appTimeZone ??
+    data?.timeZone.effectiveTimeZone ??
+    browserTimeZone;
+  const [timeZone, setTimeZone] = useState(currentTimeZone);
+  const [error, setError] = useState("");
+  const [saved, setSaved] = useState(false);
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => setTimeZone(currentTimeZone), [currentTimeZone]);
+
+  async function submit(event: FormEvent) {
+    event.preventDefault();
+    setError("");
+    setSaved(false);
+    setSaving(true);
+    try {
+      await saveTimeZone(timeZone);
+      setSaved(true);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "Could not save the Time Zone.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <main className="page narrow-page">
+      <header className="page-heading">
+        <p className="eyebrow">Settings</p>
+        <h1>App Time Zone</h1>
+        <p>This decides when Today ends on every device.</p>
+      </header>
+
+      <form className="form-card" onSubmit={submit}>
+        {!data ? (
+          <p className="notice" aria-live="polite">Loading Settings…</p>
+        ) : data.timeZone.needsConfirmation ? (
+          <p className="settings-reminder" role="status">
+            No App Time Zone is saved yet. This browser is using <strong>{data.timeZone.effectiveTimeZone}</strong>.
+          </p>
+        ) : (
+          <p className="notice">
+            Saved App Time Zone: <strong>{data.timeZone.appTimeZone}</strong>
+          </p>
+        )}
+        <label className="field">
+          <span>Time Zone</span>
+          <select onChange={(event) => {
+            setTimeZone(event.target.value);
+            setSaved(false);
+          }} value={timeZone}>
+            {!timeZones.includes(timeZone) && <option value={timeZone}>{timeZone}</option>}
+            {timeZones.map((zone) => <option key={zone} value={zone}>{zone}</option>)}
+          </select>
+        </label>
+        {error && <p className="form-error" role="alert">{error}</p>}
+        {saved && <p className="form-success" role="status">Time Zone saved.</p>}
+        <button className="primary-button" disabled={saving} type="submit">
+          {saving ? "Saving…" : "Save Time Zone"}
+        </button>
+      </form>
+    </main>
+  );
+}
+
+function PlaceholderPage({ route }: { route: Exclude<Route, "today" | "values" | "settings"> }) {
   const text = {
     goals: ["Goals", "Friendly finish lines will live here."],
     history: ["History", "Past Done actions will live here."],
-    settings: ["Settings", "App choices will live here."],
   }[route];
 
   return (
@@ -541,6 +619,14 @@ export default function App() {
     await loadToday();
   }
 
+  async function saveTimeZone(appTimeZone: string) {
+    await api("/api/settings", {
+      body: JSON.stringify({ appTimeZone }),
+      method: "PATCH",
+    });
+    await loadToday();
+  }
+
   return (
     <Shell date={today?.date} navigate={navigate} route={route}>
       {error && <div className="error-banner" role="alert">{error}</div>}
@@ -553,7 +639,8 @@ export default function App() {
         />
       )}
       {route === "values" && <ValuesPage createValue={createValue} data={today} />}
-      {route !== "today" && route !== "values" && <PlaceholderPage route={route} />}
+      {route === "settings" && <SettingsPage data={today} saveTimeZone={saveTimeZone} />}
+      {route !== "today" && route !== "values" && route !== "settings" && <PlaceholderPage route={route} />}
       <ActionDialog
         close={() => setActionTarget(undefined)}
         remove={removeAction}

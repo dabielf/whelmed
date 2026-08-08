@@ -175,6 +175,8 @@ h3 { font-size: 1.08rem; }
 .field input::placeholder, .field textarea::placeholder { color: #768278; }
 .form-card .primary-button { justify-self: start; }
 .form-error { margin: 0; color: var(--danger); font-size: 0.88rem; font-weight: 650; }
+.form-success { margin: 0; color: var(--accent-strong); font-size: 0.88rem; font-weight: 650; }
+.settings-reminder { margin: 0; color: var(--muted); line-height: 1.5; }
 
 .saved-values { margin-top: 2.5rem; }
 .saved-values ul { margin: 0; padding: 0; border-top: 1px solid var(--line); list-style: none; }
