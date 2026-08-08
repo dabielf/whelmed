@@ -1,0 +1,354 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Whelmed. History prototype</title>
+    <link rel="icon" href="../daily-dashboard/assets/whelmed-mascot-transparent.png" />
+    <style>
+      /* PROTOTYPE: Three read-only History variants, switchable with ?variant=A|B|C. */
+      :root {
+        color-scheme: light;
+        --ink: oklch(0.24 0.025 153);
+        --muted: oklch(0.47 0.025 153);
+        --canvas: oklch(0.965 0.012 145);
+        --paper: oklch(0.992 0.006 145);
+        --soft: oklch(0.94 0.018 145);
+        --line: oklch(0.84 0.028 145);
+        --accent: oklch(0.48 0.11 151);
+        --accent-soft: oklch(0.91 0.045 148);
+        --focus: oklch(0.55 0.15 151);
+        --shadow: 0 1rem 2.4rem oklch(0.26 0.02 153 / 0.12);
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+      }
+
+      * { box-sizing: border-box; }
+      html { background: var(--canvas); color: var(--ink); }
+      body { margin: 0; min-width: 20rem; min-height: 100vh; background: var(--canvas); }
+      button, input { font: inherit; }
+      button, a { -webkit-tap-highlight-color: transparent; }
+      button:focus-visible, a:focus-visible, input:focus-visible, summary:focus-visible { outline: 3px solid var(--focus); outline-offset: 3px; }
+      h1, h2, h3, p { margin: 0; }
+      h1 { font-size: 2rem; line-height: 1.08; letter-spacing: -0.035em; }
+      h2 { font-size: 1.2rem; line-height: 1.2; }
+      h3 { font-size: 1rem; line-height: 1.25; }
+      a { color: inherit; }
+
+      .app-header { border-bottom: 1px solid var(--line); background: var(--paper); }
+      .app-header-inner { display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: 2rem; width: min(74rem, calc(100% - 2.5rem)); min-height: 4.7rem; margin: 0 auto; }
+      .brand { display: inline-flex; align-items: center; gap: 0.55rem; font-weight: 780; text-decoration: none; }
+      .brand img { width: 2rem; height: 2rem; object-fit: contain; }
+      .app-nav { display: flex; justify-content: center; gap: 0.2rem; }
+      .app-nav a { padding: 0.65rem 0.8rem; border-radius: 0.65rem; color: var(--muted); font-size: 0.9rem; font-weight: 680; text-decoration: none; }
+      .app-nav a:hover { background: var(--soft); color: var(--ink); }
+      .app-nav a[aria-current="page"] { background: var(--accent-soft); color: oklch(0.37 0.095 151); }
+      .read-only { color: var(--muted); font-size: 0.78rem; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; }
+
+      main { width: min(68rem, calc(100% - 2.5rem)); margin: 0 auto; padding: 3rem 0 7rem; }
+      .page-head { display: flex; align-items: end; justify-content: space-between; gap: 1rem; margin-bottom: 1.6rem; }
+      .page-head p { margin-top: 0.4rem; color: var(--muted); font-size: 0.95rem; }
+      .range-label { color: var(--muted); font-size: 0.85rem; }
+
+      .range-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 1rem; margin-bottom: 2.4rem; padding: 0.65rem; border: 1px solid var(--line); border-radius: 0.85rem; background: var(--paper); }
+      .preset-group { display: flex; flex-wrap: wrap; gap: 0.25rem; }
+      .preset { min-height: 2.45rem; border: 0; border-radius: 0.58rem; background: transparent; padding: 0.5rem 0.75rem; color: var(--muted); font-weight: 680; cursor: pointer; }
+      .preset:hover { background: var(--soft); color: var(--ink); }
+      .preset[aria-pressed="true"] { background: var(--accent-soft); color: oklch(0.36 0.09 151); }
+      .custom-range { display: none; align-items: center; gap: 0.45rem; }
+      .custom-range.visible { display: flex; }
+      .custom-range label { color: var(--muted); font-size: 0.78rem; font-weight: 650; }
+      .custom-range input { min-height: 2.4rem; border: 1px solid var(--line); border-radius: 0.55rem; background: var(--canvas); padding: 0.4rem 0.55rem; color: var(--ink); }
+
+      .section-label { margin-bottom: 0.85rem; color: var(--muted); font-size: 0.78rem; font-weight: 760; letter-spacing: 0.055em; text-transform: uppercase; }
+      .history-summary { display: flex; align-items: baseline; justify-content: space-between; gap: 1rem; margin-bottom: 1.1rem; }
+      .history-summary p { color: var(--muted); font-size: 0.88rem; }
+      .empty { padding: 3rem 0; color: var(--muted); text-align: center; }
+
+      /* A: Value-first ledger */
+      .value-ledger { border-top: 1px solid var(--line); }
+      .value-group { border-bottom: 1px solid var(--line); }
+      .value-group summary { display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 1rem; min-height: 4.4rem; cursor: pointer; list-style: none; }
+      .value-group summary::-webkit-details-marker { display: none; }
+      .value-name { display: flex; align-items: center; gap: 0.65rem; font-size: 1.05rem; font-weight: 730; }
+      .chevron { color: var(--muted); font-size: 0.72rem; transition: transform 160ms ease-out; }
+      .value-group[open] .chevron { transform: rotate(90deg); }
+      .count { min-width: 2rem; color: var(--muted); font-variant-numeric: tabular-nums; text-align: right; }
+      .action-list { display: grid; gap: 0.1rem; margin: 0 0 1.2rem 1.25rem; padding: 0; list-style: none; }
+      .action-row { display: grid; grid-template-columns: 8rem 1fr; gap: 1rem; padding: 0.62rem 0; }
+      .action-date { color: var(--muted); font-size: 0.84rem; }
+      .action-text { line-height: 1.4; }
+      .former { margin-left: 0.45rem; color: var(--muted); font-size: 0.72rem; font-weight: 600; }
+
+      /* B: Day journal */
+      .journal-layout { display: grid; grid-template-columns: minmax(12rem, 15rem) minmax(0, 1fr); gap: 3.5rem; align-items: start; }
+      .totals-list { border-top: 1px solid var(--line); }
+      .total-row { display: flex; justify-content: space-between; gap: 1rem; padding: 0.8rem 0; border-bottom: 1px solid var(--line); }
+      .total-row span:last-child { color: var(--muted); font-variant-numeric: tabular-nums; }
+      .day-group { display: grid; grid-template-columns: 8.5rem minmax(0, 1fr); gap: 1.25rem; padding: 0 0 1.9rem; }
+      .day-heading { color: var(--muted); font-size: 0.85rem; font-weight: 720; }
+      .day-actions { display: grid; gap: 0.95rem; }
+      .journal-action p { line-height: 1.4; }
+      .tags { display: flex; flex-wrap: wrap; gap: 0.32rem; margin-top: 0.35rem; }
+      .tag { border-radius: 999px; background: var(--soft); padding: 0.2rem 0.46rem; color: var(--muted); font-size: 0.72rem; font-weight: 650; }
+
+      /* C: Filtered action stream */
+      .value-filters { display: flex; gap: 0.35rem; overflow-x: auto; margin: 0 0 1.5rem; padding: 0 0 0.45rem; }
+      .value-filter { flex: 0 0 auto; min-height: 2.75rem; border: 1px solid var(--line); border-radius: 999px; background: var(--paper); padding: 0.52rem 0.75rem; color: var(--muted); cursor: pointer; }
+      .value-filter:hover { color: var(--ink); }
+      .value-filter[aria-pressed="true"] { border-color: var(--accent); background: var(--accent-soft); color: oklch(0.35 0.09 151); }
+      .value-filter strong { margin-left: 0.38rem; font-variant-numeric: tabular-nums; }
+      .stream { border-top: 1px solid var(--line); }
+      .stream-row { display: grid; grid-template-columns: minmax(10rem, 13rem) minmax(0, 1fr) 6rem; gap: 1.25rem; align-items: start; padding: 1rem 0; border-bottom: 1px solid var(--line); }
+      .stream-values { color: oklch(0.37 0.09 151); font-size: 0.95rem; font-weight: 760; line-height: 1.4; }
+      .stream-values span + span::before { content: " + "; color: var(--muted); font-weight: 500; }
+      .stream-row time { justify-self: end; color: var(--muted); font-size: 0.84rem; }
+      .stream-row p { line-height: 1.42; }
+
+      .note { margin-top: 1rem; color: var(--muted); font-size: 0.78rem; line-height: 1.4; }
+      .prototype-switcher { position: fixed; z-index: 20; left: 50%; bottom: 1rem; transform: translateX(-50%); display: flex; align-items: center; gap: 0.25rem; min-width: min(25rem, calc(100vw - 2rem)); padding: 0.38rem; border: 1px solid oklch(0.34 0.02 150); border-radius: 999px; background: oklch(0.25 0.025 153); color: oklch(0.96 0.01 150); box-shadow: var(--shadow); }
+      .prototype-switcher button { width: 2.65rem; height: 2.65rem; border: 0; border-radius: 50%; background: transparent; color: inherit; font-size: 1.1rem; cursor: pointer; }
+      .prototype-switcher button:hover { background: oklch(0.38 0.03 153); }
+      .prototype-label { flex: 1; font-size: 0.8rem; font-weight: 720; text-align: center; }
+
+      @media (max-width: 760px) {
+        .app-header-inner { grid-template-columns: 1fr auto; width: min(100% - 1.25rem, 40rem); gap: 0.8rem; padding: 0.55rem 0; }
+        .app-nav { grid-column: 1 / -1; justify-content: flex-start; overflow-x: auto; order: 3; }
+        .app-nav a { flex: 0 0 auto; }
+        .read-only { align-self: center; }
+        main { width: min(100% - 1.25rem, 40rem); padding-top: 2rem; }
+        .page-head { align-items: start; }
+        .range-label { display: none; }
+        .range-toolbar { align-items: stretch; flex-direction: column; margin-bottom: 2rem; }
+        .custom-range { align-items: stretch; flex-direction: column; }
+        .journal-layout { grid-template-columns: 1fr; gap: 2.2rem; }
+        .totals-list { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); border-top: 0; gap: 0.2rem 1rem; }
+        .total-row { padding: 0.55rem 0; }
+        .day-group { grid-template-columns: 1fr; gap: 0.65rem; padding-bottom: 1.7rem; }
+        .action-row { grid-template-columns: 6.6rem 1fr; }
+        .stream-row { grid-template-columns: minmax(7.5rem, 9rem) minmax(0, 1fr) 4.5rem; gap: 0.8rem; }
+      }
+
+      @media (max-width: 430px) {
+        h1 { font-size: 1.75rem; }
+        .brand img { width: 1.8rem; height: 1.8rem; }
+        .preset { flex: 1 1 auto; }
+        .action-row { grid-template-columns: 1fr; gap: 0.25rem; }
+        .stream-row { grid-template-columns: 1fr; gap: 0.28rem; }
+        .stream-row time { justify-self: start; }
+        .prototype-switcher { min-width: calc(100vw - 1rem); bottom: 0.5rem; }
+      }
+
+      @media (prefers-reduced-motion: reduce) {
+        *, *::before, *::after { scroll-behavior: auto !important; transition-duration: 0.01ms !important; }
+      }
+    </style>
+  </head>
+  <body>
+    <header class="app-header">
+      <div class="app-header-inner">
+        <a class="brand" href="../daily-dashboard/index.html?variant=C">
+          <img src="../daily-dashboard/assets/whelmed-mascot-transparent.png" alt="" />
+          <span>Whelmed.</span>
+        </a>
+        <nav class="app-nav" aria-label="App navigation">
+          <a href="../daily-dashboard/index.html?variant=C">Today</a>
+          <a href="#values">Values</a>
+          <a href="#goals">Goals</a>
+          <a href="?variant=A" aria-current="page">History</a>
+          <a href="#settings">Settings</a>
+        </nav>
+        <span class="read-only">Read only</span>
+      </div>
+    </header>
+
+    <main>
+      <header class="page-head">
+        <div>
+          <h1>History</h1>
+          <p>Only actions marked Done.</p>
+        </div>
+        <span class="range-label" data-range-label></span>
+      </header>
+
+      <section class="range-toolbar" aria-label="History date range">
+        <div class="preset-group" role="group" aria-label="Date range presets">
+          <button class="preset" type="button" data-days="7">7 days</button>
+          <button class="preset" type="button" data-days="30" aria-pressed="true">30 days</button>
+          <button class="preset" type="button" data-days="90">3 months</button>
+          <button class="preset" type="button" data-days="custom">Custom</button>
+        </div>
+        <div class="custom-range" data-custom-range>
+          <label>From <input type="date" data-start value="2026-07-09" max="2026-08-07" /></label>
+          <label>To <input type="date" data-end value="2026-08-07" max="2026-08-07" /></label>
+        </div>
+      </section>
+
+      <div id="history-view"></div>
+    </main>
+
+    <nav class="prototype-switcher" aria-label="Prototype variants">
+      <button type="button" data-previous aria-label="Previous variant">←</button>
+      <span class="prototype-label" data-variant-label></span>
+      <button type="button" data-next aria-label="Next variant">→</button>
+    </nav>
+
+    <script>
+      const variants = {
+        A: "By Value",
+        B: "By Day",
+        C: "Filter a Value",
+      };
+
+      const values = ["Self-care", "Connection", "Curiosity", "Creativity", "Contribution", "Adventure"];
+      const formerValues = new Set(["Adventure"]);
+      const actions = [
+        { date: "2026-08-07", text: "Took my medication", values: ["Self-care"] },
+        { date: "2026-08-07", text: "Called Mia", values: ["Connection"] },
+        { date: "2026-08-06", text: "Read an essay about nervous-system recovery", values: ["Curiosity"] },
+        { date: "2026-08-06", text: "Sketched a calmer homepage layout", values: ["Creativity"] },
+        { date: "2026-08-05", text: "Sent one job application", values: ["Contribution", "Self-care"] },
+        { date: "2026-08-04", text: "Drank a full glass of water", values: ["Self-care"] },
+        { date: "2026-08-03", text: "Sent a voice note to a friend", values: ["Connection"] },
+        { date: "2026-08-02", text: "Watched a pottery tutorial", values: ["Curiosity", "Creativity"] },
+        { date: "2026-08-01", text: "Walked somewhere with trees", values: ["Self-care"] },
+        { date: "2026-07-31", text: "Cancelled one non-essential thing", values: ["Self-care"] },
+        { date: "2026-07-29", text: "Helped my cousin prepare an email", values: ["Contribution", "Connection"] },
+        { date: "2026-07-24", text: "Wrote one page", values: ["Creativity"] },
+        { date: "2026-07-20", text: "Researched one coaching method", values: ["Curiosity"] },
+        { date: "2026-07-14", text: "Fixed a billing error for someone", values: ["Contribution"] },
+        { date: "2026-07-08", text: "Booked the dentist appointment", values: ["Self-care"] },
+        { date: "2026-06-28", text: "Had lunch with an old friend", values: ["Connection"] },
+        { date: "2026-06-12", text: "Made a small clay bowl", values: ["Creativity", "Curiosity"] },
+        { date: "2026-05-05", text: "Took a new path through the park", values: ["Adventure"] },
+      ];
+
+      const state = {
+        variant: new URLSearchParams(location.search).get("variant")?.toUpperCase() || "A",
+        start: "2026-07-09",
+        end: "2026-08-07",
+        preset: "30",
+        selectedValue: "All",
+      };
+      if (!variants[state.variant]) state.variant = "A";
+
+      const shortDate = (date) => new Intl.DateTimeFormat("en-GB", { day: "numeric", month: "short" }).format(new Date(`${date}T12:00:00`));
+      const longDate = (date) => new Intl.DateTimeFormat("en-GB", { weekday: "short", day: "numeric", month: "long" }).format(new Date(`${date}T12:00:00`));
+      const filteredActions = () => actions.filter((action) => action.date >= state.start && action.date <= state.end);
+      const countFor = (value, list = filteredActions()) => list.filter((action) => action.values.includes(value)).length;
+      const relevantValues = (list = filteredActions()) => values.filter((value) => countFor(value, list) > 0);
+      const tags = (items) => `<div class="tags">${items.map((value) => `<span class="tag">${value}</span>`).join("")}</div>`;
+      const former = (value) => formerValues.has(value) ? `<span class="former">Former Value</span>` : "";
+
+      function valueLedger(list) {
+        const rows = relevantValues(list).map((value, index) => {
+          const matching = list.filter((action) => action.values.includes(value));
+          return `<details class="value-group" ${index === 0 ? "open" : ""}>
+            <summary><span class="value-name"><span class="chevron">▶</span>${value}${former(value)}</span><span class="count">${matching.length}</span></summary>
+            <ul class="action-list">${matching.map((action) => `<li class="action-row"><time class="action-date" datetime="${action.date}">${shortDate(action.date)}</time><span class="action-text">${action.text}</span></li>`).join("")}</ul>
+          </details>`;
+        }).join("");
+        return `<section aria-labelledby="value-counts-title">
+          <div class="history-summary"><h2 id="value-counts-title">Done actions by Value</h2><p>${list.length} actions</p></div>
+          <div class="value-ledger">${rows}</div>
+          <p class="note">An action with more than one Value appears once in each matching Value count.</p>
+        </section>`;
+      }
+
+      function dayJournal(list) {
+        const totals = relevantValues(list).map((value) => `<div class="total-row"><span>${value}${former(value)}</span><span>${countFor(value, list)}</span></div>`).join("");
+        const dates = [...new Set(list.map((action) => action.date))];
+        const days = dates.map((date) => `<section class="day-group"><h3 class="day-heading">${longDate(date)}</h3><div class="day-actions">${list.filter((action) => action.date === date).map((action) => `<article class="journal-action"><p>${action.text}</p>${tags(action.values)}</article>`).join("")}</div></section>`).join("");
+        return `<div class="journal-layout">
+          <aside aria-labelledby="totals-title"><p class="section-label" id="totals-title">Value counts</p><div class="totals-list">${totals}</div><p class="note">Multi-Value actions count once for each Value.</p></aside>
+          <section aria-labelledby="journal-title"><div class="history-summary"><h2 id="journal-title">Done actions by day</h2><p>${list.length} actions</p></div>${days}</section>
+        </div>`;
+      }
+
+      function actionStream(list) {
+        const filters = ["All", ...relevantValues(list)].map((value) => {
+          const count = value === "All" ? list.length : countFor(value, list);
+          return `<button class="value-filter" type="button" data-value="${value}" aria-pressed="${state.selectedValue === value}">${value}<strong>${count}</strong></button>`;
+        }).join("");
+        if (state.selectedValue !== "All" && !relevantValues(list).includes(state.selectedValue)) state.selectedValue = "All";
+        const visible = state.selectedValue === "All" ? list : list.filter((action) => action.values.includes(state.selectedValue));
+        const rows = visible.map((action) => `<article class="stream-row"><div class="stream-values">${action.values.map((value) => `<span>${value}${former(value)}</span>`).join("")}</div><p>${action.text}</p><time datetime="${action.date}">${shortDate(action.date)}</time></article>`).join("");
+        return `<section aria-labelledby="stream-title">
+          <div class="history-summary"><h2 id="stream-title">Done actions</h2><p>${visible.length} shown</p></div>
+          <div class="value-filters" aria-label="Filter by Value">${filters}</div>
+          <div class="stream">${rows}</div>
+          <p class="note">Counts show how many Done actions included each Value.</p>
+        </section>`;
+      }
+
+      function render() {
+        const list = filteredActions();
+        document.querySelector("[data-variant-label]").textContent = `${state.variant} · ${variants[state.variant]}`;
+        document.querySelector("[data-range-label]").textContent = `${shortDate(state.start)} to ${shortDate(state.end)}`;
+        document.querySelectorAll("[data-days]").forEach((button) => button.setAttribute("aria-pressed", String(button.dataset.days === state.preset)));
+        document.querySelector("[data-custom-range]").classList.toggle("visible", state.preset === "custom");
+        const view = document.querySelector("#history-view");
+        if (!list.length) {
+          view.innerHTML = `<p class="empty">No Done actions in this period.</p>`;
+          return;
+        }
+        view.innerHTML = state.variant === "A" ? valueLedger(list) : state.variant === "B" ? dayJournal(list) : actionStream(list);
+      }
+
+      function setVariant(variant) {
+        state.variant = variant;
+        const url = new URL(location.href);
+        url.searchParams.set("variant", variant);
+        history.replaceState(null, "", url);
+        render();
+      }
+
+      function cycle(direction) {
+        const keys = Object.keys(variants);
+        const index = keys.indexOf(state.variant);
+        setVariant(keys[(index + direction + keys.length) % keys.length]);
+      }
+
+      document.addEventListener("click", (event) => {
+        const preset = event.target.closest("[data-days]");
+        if (preset) {
+          state.preset = preset.dataset.days;
+          if (state.preset !== "custom") {
+            const end = new Date("2026-08-07T12:00:00");
+            const start = new Date(end);
+            start.setDate(end.getDate() - Number(state.preset) + 1);
+            state.start = start.toISOString().slice(0, 10);
+            state.end = "2026-08-07";
+            document.querySelector("[data-start]").value = state.start;
+            document.querySelector("[data-end]").value = state.end;
+          }
+          render();
+          return;
+        }
+        const filter = event.target.closest("[data-value]");
+        if (filter) {
+          state.selectedValue = filter.dataset.value;
+          render();
+          return;
+        }
+        if (event.target.closest("[data-previous]")) cycle(-1);
+        if (event.target.closest("[data-next]")) cycle(1);
+      });
+
+      document.addEventListener("change", (event) => {
+        if (!event.target.matches("[data-start], [data-end]")) return;
+        state.start = document.querySelector("[data-start]").value;
+        state.end = document.querySelector("[data-end]").value;
+        if (state.start > state.end) [state.start, state.end] = [state.end, state.start];
+        render();
+      });
+
+      document.addEventListener("keydown", (event) => {
+        if (!["ArrowLeft", "ArrowRight"].includes(event.key)) return;
+        if (event.target.matches("input, textarea, [contenteditable]")) return;
+        cycle(event.key === "ArrowRight" ? 1 : -1);
+      });
+
+      render();
+    </script>
+  </body>
+</html>
