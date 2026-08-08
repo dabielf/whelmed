@@ -14,9 +14,16 @@ type ValueRow = {
 type ActionRow = {
   id: string;
   value_id: string;
+  value_name: string;
+  is_primary: number;
   text: string;
   status: "planned" | "done";
   created_at: string;
+};
+
+type LinkedValue = {
+  id: string;
+  name: string;
 };
 
 let cachedIssuer = "";
@@ -75,6 +82,35 @@ function readText(
   const text = value.trim();
   if (!text || text.length > maximumLength) return undefined;
   return text;
+}
+
+function readExtraValueIds(value: unknown, primaryValueId: string) {
+  if (
+    !Array.isArray(value) ||
+    value.length > 100 ||
+    value.some(
+      (id) =>
+        typeof id !== "string" ||
+        !id ||
+        id === primaryValueId,
+    ) ||
+    new Set(value).size !== value.length
+  ) {
+    return undefined;
+  }
+  return value as string[];
+}
+
+async function activeValues(database: D1Database, ids: string[]) {
+  const { results } = await database
+    .prepare(
+      `SELECT id, name
+       FROM app_values
+       WHERE status = 'active' AND id IN (${ids.map(() => "?").join(", ")})`,
+    )
+    .bind(...ids)
+    .all<LinkedValue>();
+  return results;
 }
 
 async function readObject(context: AppContext) {
@@ -140,24 +176,67 @@ export function createApp(now: () => Date = () => new Date()) {
          ORDER BY position, created_at`,
       ).all<ValueRow>(),
       context.env.DB.prepare(
-        `SELECT da.id, dav.value_id, da.text, da.status, da.created_at
+        `SELECT da.id, dav.value_id, value.name AS value_name,
+                dav.is_primary, da.text, da.status, da.created_at
          FROM daily_actions da
          JOIN daily_action_values dav ON dav.action_id = da.id
-         JOIN app_values value ON value.id = dav.value_id
-         WHERE da.action_date = ? AND value.status = 'active'
-         ORDER BY da.created_at`,
+         JOIN app_values value
+           ON value.id = dav.value_id AND value.status = 'active'
+         WHERE da.action_date = ?
+           AND EXISTS (
+             SELECT 1
+             FROM daily_action_values primary_link
+             JOIN app_values primary_value
+               ON primary_value.id = primary_link.value_id
+              AND primary_value.status = 'active'
+             WHERE primary_link.action_id = da.id
+               AND primary_link.is_primary = 1
+           )
+         ORDER BY da.created_at, dav.is_primary DESC, value.position`,
       )
         .bind(date)
         .all<ActionRow>(),
     ]);
 
+    const groupedActions = new Map<
+      string,
+      Omit<ActionRow, "value_id" | "value_name" | "is_primary"> & {
+        values: { id: string; name: string; isPrimary: boolean }[];
+      }
+    >();
+    for (const action of actions) {
+      const existing = groupedActions.get(action.id);
+      if (existing) {
+        existing.values.push({
+          id: action.value_id,
+          name: action.value_name,
+          isPrimary: action.is_primary === 1,
+        });
+      } else {
+        const { value_id, value_name, is_primary, ...details } = action;
+        groupedActions.set(action.id, {
+          ...details,
+          values: [
+            {
+              id: value_id,
+              name: value_name,
+              isPrimary: is_primary === 1,
+            },
+          ],
+        });
+      }
+    }
+
     return context.json({
       date,
       values: values.map((value) => ({
         ...value,
-        actions: actions
-          .filter((action) => action.value_id === value.id)
-          .map(({ value_id: _valueId, ...action }) => action),
+        actions: [...groupedActions.values()].filter((action) =>
+          action.values.some(
+            (linkedValue) =>
+              linkedValue.isPrimary && linkedValue.id === value.id,
+          ),
+        ),
       })),
     });
   });
@@ -229,12 +308,23 @@ export function createApp(now: () => Date = () => new Date()) {
       return apiError(context, 400, "Done must be on or off.");
     }
 
-    const value = await context.env.DB.prepare(
-      `SELECT id, name FROM app_values WHERE id = ? AND status = 'active'`,
-    )
-      .bind(context.req.param("valueId"))
-      .first<{ id: string; name: string }>();
-    if (!value) return apiError(context, 404, "Active Value not found.");
+    const primaryValueId = context.req.param("valueId");
+    const extraValueIds = readExtraValueIds(
+      body?.extraValueIds === undefined ? [] : body.extraValueIds,
+      primaryValueId,
+    );
+    if (!extraValueIds) {
+      return apiError(context, 400, "Choose each extra Value only once.");
+    }
+
+    const linkedValues = await activeValues(context.env.DB, [
+      primaryValueId,
+      ...extraValueIds,
+    ]);
+    if (linkedValues.length !== extraValueIds.length + 1) {
+      return apiError(context, 400, "Choose Active Values only.");
+    }
+    const value = linkedValues.find(({ id }) => id === primaryValueId)!;
 
     const id = crypto.randomUUID();
     const currentTime = now();
@@ -253,12 +343,128 @@ export function createApp(now: () => Date = () => new Date()) {
            (id, action_id, value_id, value_name, is_primary)
          VALUES (?, ?, ?, ?, 1)`,
       ).bind(crypto.randomUUID(), id, value.id, value.name),
+      ...extraValueIds.map((extraValueId) => {
+        const extraValue = linkedValues.find(({ id }) => id === extraValueId)!;
+        return context.env.DB.prepare(
+          `INSERT INTO daily_action_values
+             (id, action_id, value_id, value_name, is_primary)
+           VALUES (?, ?, ?, ?, 0)`,
+        ).bind(
+          crypto.randomUUID(),
+          id,
+          extraValue.id,
+          extraValue.name,
+        );
+      }),
     ]);
 
     return context.json(
-      { action: { id, text, status, created_at: timestamp } },
+      {
+        action: {
+          id,
+          text,
+          status,
+          created_at: timestamp,
+          values: linkedValues.map((linkedValue) => ({
+            ...linkedValue,
+            isPrimary: linkedValue.id === primaryValueId,
+          })),
+        },
+      },
       201,
     );
+  });
+
+  app.patch("/api/actions/:actionId", async (context) => {
+    const timeZone = timeZoneFrom(context);
+    if (!timeZone) {
+      return apiError(context, 400, "A valid browser time zone is required.");
+    }
+
+    const body = await readObject(context);
+    const text = readText(body?.text, 500);
+    if (!text) {
+      return apiError(context, 400, "Use action text from 1 to 500 characters.");
+    }
+    if (typeof body?.done !== "boolean") {
+      return apiError(context, 400, "Done must be on or off.");
+    }
+    const primaryValueId = readText(body?.primaryValueId, 100);
+    if (!primaryValueId) {
+      return apiError(context, 400, "Choose one primary Value.");
+    }
+    const extraValueIds = readExtraValueIds(
+      body?.extraValueIds,
+      primaryValueId,
+    );
+    if (!extraValueIds) {
+      return apiError(context, 400, "Choose each extra Value only once.");
+    }
+
+    const currentTime = now();
+    const date = dateInTimeZone(currentTime, timeZone);
+    const actionId = context.req.param("actionId");
+    const action = await context.env.DB.prepare(
+      `SELECT id FROM daily_actions WHERE id = ? AND action_date = ?`,
+    )
+      .bind(actionId, date)
+      .first<{ id: string }>();
+    if (!action) return apiError(context, 404, "Today's action not found.");
+
+    const linkedValues = await activeValues(context.env.DB, [
+      primaryValueId,
+      ...extraValueIds,
+    ]);
+    if (linkedValues.length !== extraValueIds.length + 1) {
+      return apiError(context, 400, "Choose Active Values only.");
+    }
+
+    const timestamp = currentTime.toISOString();
+    const status = body.done ? "done" : "planned";
+    await context.env.DB.batch([
+      context.env.DB.prepare(
+        `UPDATE daily_actions
+         SET text = ?, status = ?, updated_at = ?
+         WHERE id = ? AND action_date = ?`,
+      ).bind(text, status, timestamp, actionId, date),
+      context.env.DB.prepare(
+        `DELETE FROM daily_action_values WHERE action_id = ?`,
+      ).bind(actionId),
+      ...[primaryValueId, ...extraValueIds].map((valueId) => {
+        const linkedValue = linkedValues.find(({ id }) => id === valueId)!;
+        return context.env.DB.prepare(
+          `INSERT INTO daily_action_values
+             (id, action_id, value_id, value_name, is_primary)
+           VALUES (?, ?, ?, ?, ?)`,
+        ).bind(
+          crypto.randomUUID(),
+          actionId,
+          linkedValue.id,
+          linkedValue.name,
+          linkedValue.id === primaryValueId ? 1 : 0,
+        );
+      }),
+    ]);
+
+    return context.json({ action: { id: actionId, text, status } });
+  });
+
+  app.delete("/api/actions/:actionId", async (context) => {
+    const timeZone = timeZoneFrom(context);
+    if (!timeZone) {
+      return apiError(context, 400, "A valid browser time zone is required.");
+    }
+
+    const date = dateInTimeZone(now(), timeZone);
+    const result = await context.env.DB.prepare(
+      `DELETE FROM daily_actions WHERE id = ? AND action_date = ?`,
+    )
+      .bind(context.req.param("actionId"), date)
+      .run();
+    if (!result.meta.changes) {
+      return apiError(context, 404, "Today's action not found.");
+    }
+    return context.body(null, 204);
   });
 
   app.notFound((context) => apiError(context, 404, "Not found."));

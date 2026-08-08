@@ -5,6 +5,11 @@ type Action = {
   text: string;
   status: "planned" | "done";
   created_at: string;
+  values: {
+    id: string;
+    name: string;
+    isPrimary: boolean;
+  }[];
 };
 
 type Value = {
@@ -18,6 +23,11 @@ type Value = {
 type Today = {
   date: string;
   values: Value[];
+};
+
+type ActionTarget = {
+  value: Value;
+  action?: Action;
 };
 
 type Route = "today" | "values" | "goals" | "history" | "settings";
@@ -45,7 +55,9 @@ async function api<T>(path: string, options: RequestInit = {}) {
   if (options.body) headers.set("content-type", "application/json");
 
   const response = await fetch(path, { ...options, headers });
-  const body = (await response.json()) as T & { error?: string };
+  const body = (response.status === 204
+    ? {}
+    : await response.json()) as T & { error?: string };
   if (!response.ok) throw new Error(body.error ?? "Whelmed could not save that.");
   return body;
 }
@@ -56,6 +68,14 @@ function formattedDate(date: string) {
     month: "long",
     weekday: "long",
   }).format(new Date(`${date}T12:00:00`));
+}
+
+function actionSummary(actions: Action[]) {
+  if (!actions.length) return "No action yet.";
+  const hasDone = actions.some((action) => action.status === "done");
+  const hasPlanned = actions.some((action) => action.status === "planned");
+  if (hasDone && hasPlanned) return "Done and Planned actions are here.";
+  return hasDone ? "A Done action is here." : "An action is planned.";
 }
 
 function Brand() {
@@ -112,7 +132,7 @@ function TodayPage({
 }: {
   data?: Today;
   loading: boolean;
-  openAction: (value: Value) => void;
+  openAction: (value: Value, action?: Action) => void;
   navigate: (route: Route) => void;
 }) {
   return (
@@ -143,13 +163,7 @@ function TodayPage({
               <header className="value-heading">
                 <div>
                   <h3>{value.name}</h3>
-                  <p>
-                    {value.actions.some((action) => action.status === "done")
-                      ? "A Done action is here."
-                      : value.actions.length
-                        ? "An action is planned."
-                        : "No action yet."}
-                  </p>
+                  <p>{actionSummary(value.actions)}</p>
                 </div>
                 <button className="quiet-button" onClick={() => openAction(value)}>
                   Add action
@@ -160,13 +174,29 @@ function TodayPage({
                 <ul className="action-list">
                   {value.actions.map((action) => (
                     <li className="action-row" key={action.id}>
-                      <span className={`state-mark ${action.status}`} aria-hidden="true">
-                        {action.status === "done" ? "✓" : "○"}
-                      </span>
-                      <span>{action.text}</span>
-                      <span className="state-label">
-                        {action.status === "done" ? "Done" : "Planned"}
-                      </span>
+                      <button
+                        className="action-button"
+                        onClick={() => openAction(value, action)}
+                        type="button"
+                      >
+                        <span className={`state-mark ${action.status}`} aria-hidden="true">
+                          {action.status === "done" ? "✓" : "○"}
+                        </span>
+                        <span className="action-copy">
+                          <span>{action.text}</span>
+                          {action.values.some((linkedValue) => !linkedValue.isPrimary) && (
+                            <small>
+                              Also: {action.values
+                                .filter((linkedValue) => !linkedValue.isPrimary)
+                                .map((linkedValue) => linkedValue.name)
+                                .join(", ")}
+                            </small>
+                          )}
+                        </span>
+                        <span className="state-label">
+                          {action.status === "done" ? "Done" : "Planned"}
+                        </span>
+                      </button>
                     </li>
                   ))}
                 </ul>
@@ -273,53 +303,87 @@ function PlaceholderPage({ route }: { route: Exclude<Route, "today" | "values"> 
 }
 
 function ActionDialog({
-  value,
+  target,
+  values,
   close,
   save,
+  remove,
 }: {
-  value?: Value;
+  target?: ActionTarget;
+  values: Value[];
   close: () => void;
-  save: (value: Value, text: string, done: boolean) => Promise<void>;
+  save: (
+    action: Action | undefined,
+    primaryValueId: string,
+    text: string,
+    done: boolean,
+    extraValueIds: string[],
+  ) => Promise<void>;
+  remove: (actionId: string) => Promise<void>;
 }) {
   const dialog = useRef<HTMLDialogElement>(null);
   const actionInput = useRef<HTMLInputElement>(null);
   const [text, setText] = useState("");
   const [done, setDone] = useState(true);
+  const [primaryValueId, setPrimaryValueId] = useState("");
+  const [extraValueIds, setExtraValueIds] = useState<string[]>([]);
   const [error, setError] = useState("");
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
-    if (!value || !dialog.current || dialog.current.open) return;
-    setText("");
-    setDone(true);
+    if (!target || !dialog.current || dialog.current.open) return;
+    const primaryValue = target.action?.values.find(
+      (linkedValue) => linkedValue.isPrimary,
+    );
+    setText(target.action?.text ?? "");
+    setDone(target.action?.status !== "planned");
+    setPrimaryValueId(primaryValue?.id ?? target.value.id);
+    setExtraValueIds(
+      target.action?.values
+        .filter((linkedValue) => !linkedValue.isPrimary)
+        .map((linkedValue) => linkedValue.id) ?? [],
+    );
     setError("");
     setSaving(false);
     dialog.current.showModal();
     actionInput.current?.focus();
-  }, [value]);
+  }, [target]);
 
   async function submit(event: FormEvent) {
     event.preventDefault();
-    if (!value) return;
+    if (!target) return;
     setError("");
     setSaving(true);
     try {
-      await save(value, text, done);
+      await save(target.action, primaryValueId, text, done, extraValueIds);
       dialog.current?.close();
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "Could not add the action.");
+      setError(caught instanceof Error ? caught.message : "Could not save the action.");
+      setSaving(false);
+    }
+  }
+
+  async function deleteAction() {
+    if (!target?.action || !window.confirm("Delete this action?")) return;
+    setError("");
+    setSaving(true);
+    try {
+      await remove(target.action.id);
+      dialog.current?.close();
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "Could not delete the action.");
       setSaving(false);
     }
   }
 
   return (
     <dialog className="action-dialog" onClose={close} ref={dialog}>
-      {value && (
+      {target && (
         <form onSubmit={submit}>
           <header className="dialog-heading">
             <div>
-              <p className="eyebrow">{value.name}</p>
-              <h2>Add an action</h2>
+              <p className="eyebrow">{target.action ? "Today" : target.value.name}</p>
+              <h2>{target.action ? "Edit action" : "Add an action"}</h2>
             </div>
             <button className="close-button" onClick={() => dialog.current?.close()} type="button" aria-label="Close">
               ×
@@ -339,6 +403,25 @@ function ActionDialog({
             />
           </label>
 
+          {target.action && values.length > 1 && (
+            <label className="field">
+              <span>Primary Value</span>
+              <select
+                onChange={(event) => {
+                  setPrimaryValueId(event.target.value);
+                  setExtraValueIds((current) =>
+                    current.filter((valueId) => valueId !== event.target.value),
+                  );
+                }}
+                value={primaryValueId}
+              >
+                {values.map((value) => (
+                  <option key={value.id} value={value.id}>{value.name}</option>
+                ))}
+              </select>
+            </label>
+          )}
+
           <label className="done-control">
             <input
               checked={done}
@@ -352,12 +435,46 @@ function ActionDialog({
             </span>
           </label>
 
+          {values.length > 1 && (
+            <details className="extra-values">
+              <summary>Add another Value</summary>
+              <fieldset>
+                <legend>This action also fits</legend>
+                {values
+                  .filter((value) => value.id !== primaryValueId)
+                  .map((value) => (
+                    <label key={value.id}>
+                      <input
+                        checked={extraValueIds.includes(value.id)}
+                        onChange={(event) =>
+                          setExtraValueIds((current) =>
+                            event.target.checked
+                              ? [...current, value.id]
+                              : current.filter((valueId) => valueId !== value.id),
+                          )
+                        }
+                        type="checkbox"
+                      />
+                      <span>{value.name}</span>
+                    </label>
+                  ))}
+              </fieldset>
+            </details>
+          )}
+
           {error && <p className="form-error" role="alert">{error}</p>}
           <footer className="dialog-actions">
-            <button className="quiet-button" onClick={() => dialog.current?.close()} type="button">Cancel</button>
-            <button className="primary-button" disabled={saving} type="submit">
-              {saving ? "Adding…" : "Add action"}
-            </button>
+            {target.action && (
+              <button className="danger-button" disabled={saving} onClick={deleteAction} type="button">
+                Delete action
+              </button>
+            )}
+            <span className="dialog-save-actions">
+              <button className="quiet-button" onClick={() => dialog.current?.close()} type="button">Cancel</button>
+              <button className="primary-button" disabled={saving} type="submit">
+                {saving ? "Saving…" : target.action ? "Save changes" : "Add action"}
+              </button>
+            </span>
           </footer>
         </form>
       )}
@@ -370,7 +487,7 @@ export default function App() {
   const [today, setToday] = useState<Today>();
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
-  const [actionValue, setActionValue] = useState<Value>();
+  const [actionTarget, setActionTarget] = useState<ActionTarget>();
 
   const loadToday = useCallback(async () => {
     setError("");
@@ -405,11 +522,22 @@ export default function App() {
     navigate("today");
   }
 
-  async function saveAction(value: Value, text: string, done: boolean) {
-    await api(`/api/values/${value.id}/actions`, {
-      body: JSON.stringify({ text, done }),
-      method: "POST",
+  async function saveAction(
+    action: Action | undefined,
+    primaryValueId: string,
+    text: string,
+    done: boolean,
+    extraValueIds: string[],
+  ) {
+    await api(action ? `/api/actions/${action.id}` : `/api/values/${primaryValueId}/actions`, {
+      body: JSON.stringify({ text, done, primaryValueId, extraValueIds }),
+      method: action ? "PATCH" : "POST",
     });
+    await loadToday();
+  }
+
+  async function removeAction(actionId: string) {
+    await api(`/api/actions/${actionId}`, { method: "DELETE" });
     await loadToday();
   }
 
@@ -417,11 +545,22 @@ export default function App() {
     <Shell date={today?.date} navigate={navigate} route={route}>
       {error && <div className="error-banner" role="alert">{error}</div>}
       {route === "today" && (
-        <TodayPage data={today} loading={loading} navigate={navigate} openAction={setActionValue} />
+        <TodayPage
+          data={today}
+          loading={loading}
+          navigate={navigate}
+          openAction={(value, action) => setActionTarget({ value, action })}
+        />
       )}
       {route === "values" && <ValuesPage createValue={createValue} data={today} />}
       {route !== "today" && route !== "values" && <PlaceholderPage route={route} />}
-      <ActionDialog close={() => setActionValue(undefined)} save={saveAction} value={actionValue} />
+      <ActionDialog
+        close={() => setActionTarget(undefined)}
+        remove={removeAction}
+        save={saveAction}
+        target={actionTarget}
+        values={today?.values ?? []}
+      />
     </Shell>
   );
 }

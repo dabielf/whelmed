@@ -33,6 +33,8 @@ button { color: inherit; }
 button:focus-visible,
 input:focus-visible,
 textarea:focus-visible,
+select:focus-visible,
+summary:focus-visible,
 a:focus-visible {
   outline: 3px solid var(--focus);
   outline-offset: 3px;
@@ -121,7 +123,24 @@ h3 { font-size: 1.08rem; }
 .primary-button:disabled { opacity: 0.6; cursor: wait; }
 
 .action-list { display: grid; gap: 0.45rem; margin: 1rem 0 0; padding: 0; list-style: none; }
-.action-row { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 0.7rem; min-height: 2.7rem; }
+.action-row { min-height: 2.7rem; }
+.action-button {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 0.7rem;
+  width: 100%;
+  min-height: 2.75rem;
+  padding: 0.35rem;
+  border: 0;
+  border-radius: 0.7rem;
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+}
+.action-button:hover { background: var(--paper); }
+.action-copy { display: grid; gap: 0.2rem; min-width: 0; }
+.action-copy small { color: var(--muted); line-height: 1.35; }
 .state-mark { display: grid; place-items: center; width: 1.75rem; height: 1.75rem; border: 1px solid var(--line); border-radius: 50%; font-weight: 800; }
 .state-mark.done { border-color: var(--accent); background: var(--accent-soft); color: var(--accent-strong); }
 .state-label { color: var(--muted); font-size: 0.78rem; }
@@ -142,7 +161,7 @@ h3 { font-size: 1.08rem; }
 .field > span { font-size: 0.84rem; font-weight: 750; }
 .field small { margin-left: 0.3rem; color: var(--muted); font-weight: 500; }
 
-.field input, .field textarea {
+.field input, .field textarea, .field select {
   width: 100%;
   min-height: 2.9rem;
   padding: 0.72rem 0.8rem;
@@ -167,6 +186,7 @@ h3 { font-size: 1.08rem; }
 .action-dialog {
   width: min(34rem, calc(100vw - 2rem));
   max-height: calc(100vh - 2rem);
+  overflow-y: auto;
   padding: 0;
   border: 0;
   border-radius: 1rem;
@@ -185,7 +205,16 @@ h3 { font-size: 1.08rem; }
 .done-control input { width: 1.25rem; height: 1.25rem; margin: 0.1rem 0 0; accent-color: var(--accent); }
 .done-control span { display: grid; gap: 0.18rem; }
 .done-control small { color: var(--muted); line-height: 1.4; }
-.dialog-actions { display: flex; justify-content: flex-end; gap: 0.6rem; }
+.extra-values { border: 1px solid var(--line); border-radius: 0.75rem; }
+.extra-values summary { min-height: 2.75rem; padding: 0.8rem 0.9rem; cursor: pointer; font-weight: 700; }
+.extra-values fieldset { display: grid; gap: 0.35rem; margin: 0; padding: 0 0.9rem 0.9rem; border: 0; }
+.extra-values legend { margin-bottom: 0.45rem; padding: 0; color: var(--muted); font-size: 0.8rem; }
+.extra-values label { display: flex; align-items: center; gap: 0.65rem; min-height: 2.75rem; cursor: pointer; }
+.extra-values input { width: 1.2rem; height: 1.2rem; accent-color: var(--accent); }
+.dialog-actions { display: flex; align-items: center; justify-content: space-between; gap: 0.6rem; }
+.dialog-save-actions { display: flex; gap: 0.6rem; }
+.danger-button { min-height: 2.75rem; padding: 0.66rem 0; border: 0; background: transparent; color: var(--danger); cursor: pointer; font-weight: 700; }
+.danger-button:disabled { opacity: 0.6; cursor: wait; }
 
 .error-banner { padding: 0.85rem 1rem; background: #f7dddd; color: #6f2525; font-weight: 650; text-align: center; }
 
@@ -200,8 +229,12 @@ h3 { font-size: 1.08rem; }
 
 @media (max-width: 520px) {
   .action-dialog { width: 100%; max-width: none; max-height: calc(100vh - 0.5rem); margin: auto 0 0; border-radius: 1rem 1rem 0 0; }
-  .action-row { grid-template-columns: auto minmax(0, 1fr); }
-  .state-label { grid-column: 2; }
+  .action-button { grid-template-columns: auto minmax(0, 1fr); }
+  .action-button .state-label { grid-column: 2; }
+  .dialog-actions { align-items: stretch; flex-direction: column-reverse; }
+  .dialog-save-actions { display: grid; grid-template-columns: 1fr 1fr; }
+  .dialog-save-actions button { width: 100%; }
+  .danger-button { align-self: start; }
 }
 
 @media (prefers-reduced-motion: reduce) {
