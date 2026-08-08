@@ -1,5 +1,6 @@
 import { env } from "cloudflare:workers";
 import { beforeEach, describe, expect, it } from "vitest";
+import { historyRange } from "../src/history-range";
 import { createApp } from "../worker";
 
 const now = () => new Date("2026-08-08T10:00:00.000Z");
@@ -1183,6 +1184,17 @@ describe("current Goals", () => {
   });
 });
 
+describe("History date presets", () => {
+  it("uses calendar months for the 3-month range", () => {
+    expect(historyRange("2026-08-08", "3months")).toEqual({
+      start: "2026-05-08",
+      end: "2026-08-07",
+    });
+    expect(historyRange("2025-05-31", "3months").start).toBe("2025-02-28");
+    expect(historyRange("2024-05-31", "3months").start).toBe("2024-02-29");
+  });
+});
+
 describe("read-only History", () => {
   it("returns only Done actions from past days in an inclusive range", async () => {
     const app = createApp(now);
@@ -1415,12 +1427,12 @@ describe("read-only History", () => {
     }
   });
 
-  it("supports the inclusive 7-day, 30-day, and 90-day periods", async () => {
+  it("supports inclusive 7-day, 30-day, and calendar 3-month periods", async () => {
     const app = createApp(now);
     const careId = await createValue(app, "Care");
     for (const [id, date] of [
-      ["day-91", "2026-05-09"],
-      ["day-90", "2026-05-10"],
+      ["before-3-months", "2026-05-07"],
+      ["start-of-3-months", "2026-05-08"],
       ["day-31", "2026-07-08"],
       ["day-30", "2026-07-09"],
       ["day-8", "2026-07-31"],
@@ -1446,13 +1458,13 @@ describe("read-only History", () => {
 
     expect(await ids("2026-08-01")).toEqual(["day-1", "day-7"]);
     expect(await ids("2026-07-09")).toEqual(["day-1", "day-7", "day-8", "day-30"]);
-    expect(await ids("2026-05-10")).toEqual([
+    expect(await ids("2026-05-08")).toEqual([
       "day-1",
       "day-7",
       "day-8",
       "day-30",
       "day-31",
-      "day-90",
+      "start-of-3-months",
     ]);
   });
 

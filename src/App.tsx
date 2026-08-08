@@ -1,4 +1,5 @@
 import { type FormEvent, useCallback, useEffect, useRef, useState } from "react";
+import { historyRange, shiftDate, type HistoryPreset } from "./history-range";
 
 type Action = {
   id: string;
@@ -115,10 +116,10 @@ const goalHorizons: { horizon: GoalHorizon; label: string }[] = [
 ];
 
 const historyPresets = [
-  { days: 7, label: "7 days" },
-  { days: 30, label: "30 days" },
-  { days: 90, label: "3 months" },
-];
+  { preset: 7, label: "7 days" },
+  { preset: 30, label: "30 days" },
+  { preset: "3months", label: "3 months" },
+] as const;
 
 function emptyGoalLists(): GoalLists {
   return { week: [], month: [], year: [], someday: [] };
@@ -170,17 +171,6 @@ function shortDate(date: string) {
     month: "short",
     year: "numeric",
   }).format(new Date(`${date}T12:00:00`));
-}
-
-function shiftDate(date: string, days: number) {
-  const shifted = new Date(`${date}T12:00:00.000Z`);
-  shifted.setUTCDate(shifted.getUTCDate() + days);
-  return shifted.toISOString().slice(0, 10);
-}
-
-function historyRange(today: string, days: number) {
-  const end = shiftDate(today, -1);
-  return { start: shiftDate(end, 1 - days), end };
 }
 
 function goalPeriodLabel(goal: Goal) {
@@ -1187,7 +1177,7 @@ function NeedsReviewGoal({
 }
 
 function HistoryPage({ today }: { today?: string }) {
-  const [preset, setPreset] = useState<number | "custom">(30);
+  const [preset, setPreset] = useState<HistoryPreset | "custom">(30);
   const [start, setStart] = useState("");
   const [end, setEnd] = useState("");
   const [selectedValue, setSelectedValue] = useState<string>();
@@ -1226,10 +1216,10 @@ function HistoryPage({ today }: { today?: string }) {
     void loadHistory(range.start, range.end);
   }, [loadHistory, today]);
 
-  function choosePreset(days: number) {
+  function choosePreset(nextPreset: HistoryPreset) {
     if (!today) return;
-    const range = historyRange(today, days);
-    setPreset(days);
+    const range = historyRange(today, nextPreset);
+    setPreset(nextPreset);
     setStart(range.start);
     setEnd(range.end);
     setSelectedValue(undefined);
@@ -1267,11 +1257,11 @@ function HistoryPage({ today }: { today?: string }) {
         <div className="history-presets" role="group" aria-label="Date range presets">
           {historyPresets.map((item) => (
             <button
-              aria-pressed={preset === item.days}
+              aria-pressed={preset === item.preset}
               className="history-preset"
               disabled={!today}
-              key={item.days}
-              onClick={() => choosePreset(item.days)}
+              key={item.preset}
+              onClick={() => choosePreset(item.preset)}
               type="button"
             >
               {item.label}
