@@ -33,6 +33,18 @@ type MenuRow = {
   position: number;
 };
 
+type GoalHorizon = "week" | "month" | "year" | "someday";
+
+type GoalRow = {
+  id: string;
+  text: string;
+  horizon: GoalHorizon;
+  periodStart: string | null;
+  position: number;
+};
+
+type GoalLists = Record<GoalHorizon, GoalRow[]>;
+
 let cachedIssuer = "";
 let cachedJwks: ReturnType<typeof createRemoteJWKSet> | undefined;
 
@@ -212,6 +224,63 @@ function dateInTimeZone(date: Date, timeZone: string) {
   return `${part("year")}-${part("month")}-${part("day")}`;
 }
 
+function currentPeriodStarts(date: string) {
+  const [year, month, day] = date.split("-").map(Number);
+  const monday = new Date(Date.UTC(year, month - 1, day));
+  monday.setUTCDate(monday.getUTCDate() - ((monday.getUTCDay() + 6) % 7));
+
+  return {
+    week: monday.toISOString().slice(0, 10),
+    month: `${date.slice(0, 7)}-01`,
+    year: `${date.slice(0, 4)}-01-01`,
+    someday: null,
+  } satisfies Record<GoalHorizon, string | null>;
+}
+
+function isGoalHorizon(value: unknown): value is GoalHorizon {
+  return typeof value === "string" &&
+    ["week", "month", "year", "someday"].includes(value);
+}
+
+async function reconcileGoals(
+  database: D1Database,
+  date: string,
+  timestamp: string,
+) {
+  const periods = currentPeriodStarts(date);
+  await database.prepare(
+    `UPDATE goals
+     SET status = 'needs_review', updated_at = ?
+     WHERE status = 'active' AND (
+       (horizon = 'week' AND period_start < ?)
+       OR (horizon = 'month' AND period_start < ?)
+       OR (horizon = 'year' AND period_start < ?)
+     )`,
+  ).bind(timestamp, periods.week, periods.month, periods.year).run();
+}
+
+async function currentGoalLists(database: D1Database, date: string) {
+  const periods = currentPeriodStarts(date);
+  const { results } = await database.prepare(
+    `SELECT id, text, horizon, period_start AS periodStart, position
+     FROM goals
+     WHERE status = 'active' AND (
+       (horizon = 'week' AND period_start = ?)
+       OR (horizon = 'month' AND period_start = ?)
+       OR (horizon = 'year' AND period_start = ?)
+       OR horizon = 'someday'
+     )
+     ORDER BY CASE horizon
+       WHEN 'week' THEN 0 WHEN 'month' THEN 1
+       WHEN 'year' THEN 2 ELSE 3 END,
+       position, created_at`,
+  ).bind(periods.week, periods.month, periods.year).all<GoalRow>();
+
+  const lists: GoalLists = { week: [], month: [], year: [], someday: [] };
+  for (const goal of results) lists[goal.horizon].push(goal);
+  return lists;
+}
+
 export function createApp(now: () => Date = () => new Date()) {
   const app = new Hono<AppBindings>();
 
@@ -229,12 +298,13 @@ export function createApp(now: () => Date = () => new Date()) {
     }
 
     const date = dateInTimeZone(now(), timeZone.effectiveTimeZone);
-    await context.env.DB.prepare(
-      "DELETE FROM daily_actions WHERE status = 'planned' AND action_date < ?",
-    )
-      .bind(date)
-      .run();
-    const [{ results: values }, { results: actions }] = await Promise.all([
+    await Promise.all([
+      context.env.DB.prepare(
+        "DELETE FROM daily_actions WHERE status = 'planned' AND action_date < ?",
+      ).bind(date).run(),
+      reconcileGoals(context.env.DB, date, now().toISOString()),
+    ]);
+    const [{ results: values }, { results: actions }, goals] = await Promise.all([
       context.env.DB.prepare(
         `SELECT id, name, meaning, position
          FROM app_values
@@ -262,6 +332,7 @@ export function createApp(now: () => Date = () => new Date()) {
       )
         .bind(date)
         .all<ActionRow>(),
+      currentGoalLists(context.env.DB, date),
     ]);
 
     const groupedActions = new Map<
@@ -296,6 +367,7 @@ export function createApp(now: () => Date = () => new Date()) {
     return context.json({
       date,
       timeZone,
+      goals,
       values: values.map((value) => ({
         ...value,
         actions: [...groupedActions.values()].filter((action) =>
@@ -306,6 +378,104 @@ export function createApp(now: () => Date = () => new Date()) {
         ),
       })),
     });
+  });
+
+  app.get("/api/goals", async (context) => {
+    const timeZone = await timeZoneState(context);
+    if (!timeZone) {
+      return apiError(context, 400, "A valid browser time zone is required.");
+    }
+
+    const currentTime = now();
+    const date = dateInTimeZone(currentTime, timeZone.effectiveTimeZone);
+    await reconcileGoals(context.env.DB, date, currentTime.toISOString());
+    return context.json({ goals: await currentGoalLists(context.env.DB, date) });
+  });
+
+  app.post("/api/goals", async (context) => {
+    const timeZone = await timeZoneState(context);
+    if (!timeZone) {
+      return apiError(context, 400, "A valid browser time zone is required.");
+    }
+
+    const body = await readObject(context);
+    const text = readText(body?.text, 200);
+    if (!text) {
+      return apiError(context, 400, "Use a finishable outcome from 1 to 200 characters.");
+    }
+    if (!isGoalHorizon(body?.horizon)) {
+      return apiError(context, 400, "Choose Week, Month, Year, or Someday.");
+    }
+
+    const currentTime = now();
+    const timestamp = currentTime.toISOString();
+    const date = dateInTimeZone(currentTime, timeZone.effectiveTimeZone);
+    const periodStart = currentPeriodStarts(date)[body.horizon];
+    const id = crypto.randomUUID();
+    await context.env.DB.prepare(
+      `INSERT INTO goals
+         (id, text, horizon, period_start, status, position,
+          completed_at, created_at, updated_at)
+       VALUES (?, ?, ?, ?, 'active',
+         (SELECT COALESCE(MAX(position), -1) + 1 FROM goals
+          WHERE status = 'active' AND horizon = ? AND period_start IS ?),
+         NULL, ?, ?)`,
+    ).bind(
+      id,
+      text,
+      body.horizon,
+      periodStart,
+      body.horizon,
+      periodStart,
+      timestamp,
+      timestamp,
+    ).run();
+
+    const goal = await context.env.DB.prepare(
+      `SELECT id, text, horizon, period_start AS periodStart, position
+       FROM goals WHERE id = ?`,
+    ).bind(id).first<GoalRow>();
+    return context.json({ goal }, 201);
+  });
+
+  app.put("/api/goals/order", async (context) => {
+    const timeZone = await timeZoneState(context);
+    if (!timeZone) {
+      return apiError(context, 400, "A valid browser time zone is required.");
+    }
+
+    const body = await readObject(context);
+    const ids = body?.ids;
+    if (
+      !isGoalHorizon(body?.horizon) ||
+      !Array.isArray(ids) ||
+      ids.length > 1_000 ||
+      ids.some((id) => typeof id !== "string" || !id) ||
+      new Set(ids).size !== ids.length
+    ) {
+      return apiError(context, 400, "Send every Goal in one current Goal List once.");
+    }
+
+    const currentTime = now();
+    const timestamp = currentTime.toISOString();
+    const date = dateInTimeZone(currentTime, timeZone.effectiveTimeZone);
+    await reconcileGoals(context.env.DB, date, timestamp);
+    const lists = await currentGoalLists(context.env.DB, date);
+    const stored = lists[body.horizon];
+    const storedIds = new Set(stored.map(({ id }) => id));
+    if (ids.length !== stored.length || ids.some((id) => !storedIds.has(id))) {
+      return apiError(context, 400, "Send every Goal in one current Goal List once.");
+    }
+
+    if (ids.length) {
+      await context.env.DB.batch(ids.map((id, position) =>
+        context.env.DB.prepare(
+          "UPDATE goals SET position = ?, updated_at = ? WHERE id = ?",
+        ).bind(position, timestamp, id),
+      ));
+    }
+    const goals = (await currentGoalLists(context.env.DB, date))[body.horizon];
+    return context.json({ goals });
   });
 
   app.get("/api/settings", async (context) => {

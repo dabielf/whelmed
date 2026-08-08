@@ -66,8 +66,32 @@ async function createMenuEntry(
   return (await response.json<{ entry: { id: string } }>()).entry.id;
 }
 
+type Goal = {
+  id: string;
+  text: string;
+  horizon: "week" | "month" | "year" | "someday";
+  periodStart: string | null;
+  position: number;
+};
+
+type GoalLists = Record<Goal["horizon"], Goal[]>;
+
+async function createGoal(
+  app: ReturnType<typeof createApp>,
+  horizon: Goal["horizon"],
+  text: string,
+) {
+  const response = await request(app, "/api/goals", {
+    method: "POST",
+    body: JSON.stringify({ horizon, text }),
+  });
+  expect(response.status).toBe(201);
+  return (await response.json<{ goal: Goal }>()).goal;
+}
+
 beforeEach(async () => {
   await env.DB.batch([
+    env.DB.prepare("DELETE FROM goals"),
     env.DB.prepare("DELETE FROM daily_action_values"),
     env.DB.prepare("DELETE FROM daily_actions"),
     env.DB.prepare("DELETE FROM app_values"),
@@ -95,6 +119,7 @@ describe("first Value-aligned Action", () => {
         effectiveTimeZone: "Europe/Paris",
         needsConfirmation: true,
       },
+      goals: { week: [], month: [], year: [], someday: [] },
       values: [
         expect.objectContaining({
           id: value.id,
@@ -822,6 +847,111 @@ describe("Action Menus", () => {
     expect(
       await (await request(app, `/api/values/${connectionId}/menu`)).json(),
     ).toEqual(connectionMenu);
+  });
+});
+
+describe("current Goals", () => {
+  it("creates several Goals at the bottom of each current Goal List", async () => {
+    const app = createApp(now);
+
+    for (const body of [
+      { horizon: "week", text: "  " },
+      { horizon: "week", text: "x".repeat(201) },
+      { horizon: "decade", text: "Build a cabin" },
+      { horizon: ["week"], text: "Build a cabin" },
+    ]) {
+      expect((await request(app, "/api/goals", {
+        method: "POST",
+        body: JSON.stringify(body),
+      })).status).toBe(400);
+    }
+
+    const firstWeek = await createGoal(app, "week", "Send one application");
+    const secondWeek = await createGoal(app, "week", "Book the dentist");
+    const month = await createGoal(app, "month", "Choose a CV direction");
+    const year = await createGoal(app, "year", "Move closer to trees");
+    const someday = await createGoal(app, "someday", "Learn pottery");
+
+    expect(await (await request(app, "/api/goals")).json()).toEqual({
+      goals: {
+        week: [
+          { ...firstWeek, periodStart: "2026-08-03", position: 0 },
+          { ...secondWeek, periodStart: "2026-08-03", position: 1 },
+        ],
+        month: [{ ...month, periodStart: "2026-08-01", position: 0 }],
+        year: [{ ...year, periodStart: "2026-01-01", position: 0 }],
+        someday: [{ ...someday, periodStart: null, position: 0 }],
+      },
+    });
+  });
+
+  it("fully reorders one current Goal List and returns all current Goals on Today", async () => {
+    const app = createApp(now);
+    const first = await createGoal(app, "week", "Send one application");
+    const second = await createGoal(app, "week", "Book the dentist");
+    const third = await createGoal(app, "week", "Call the landlord");
+    const month = await createGoal(app, "month", "Choose a CV direction");
+
+    for (const ids of [
+      [third.id, first.id],
+      [third.id, first.id, "missing"],
+      [third.id, third.id, first.id],
+      [third.id, first.id, month.id],
+    ]) {
+      expect((await request(app, "/api/goals/order", {
+        method: "PUT",
+        body: JSON.stringify({ horizon: "week", ids }),
+      })).status).toBe(400);
+    }
+
+    const reordered = await request(app, "/api/goals/order", {
+      method: "PUT",
+      body: JSON.stringify({
+        horizon: "week",
+        ids: [third.id, first.id, second.id],
+      }),
+    });
+    expect(reordered.status).toBe(200);
+    expect(await reordered.json()).toEqual({
+      goals: [
+        { ...third, position: 0 },
+        { ...first, position: 1 },
+        { ...second, position: 2 },
+      ],
+    });
+
+    const today = await (await request(app, "/api/today")).json<{
+      goals: Record<Goal["horizon"], Goal[]>;
+    }>();
+    expect(today.goals).toEqual({
+      week: [
+        { ...third, position: 0 },
+        { ...first, position: 1 },
+        { ...second, position: 2 },
+      ],
+      month: [month],
+      year: [],
+      someday: [],
+    });
+  });
+
+  it("moves an expired Goal out of the current Goal Lists", async () => {
+    const app = createApp(now);
+    await env.DB.prepare(
+      `INSERT INTO goals
+         (id, text, horizon, period_start, status, position,
+          completed_at, created_at, updated_at)
+       VALUES ('old-week', 'Finished last week', 'week', '2026-07-27',
+         'active', 0, NULL, '2026-07-27T00:00:00.000Z',
+         '2026-07-27T00:00:00.000Z')`,
+    ).run();
+
+    const response = await request(app, "/api/goals");
+    expect(response.status).toBe(200);
+    expect((await response.json<{ goals: GoalLists }>()).goals.week).toEqual([]);
+    expect(await env.DB.prepare(
+      "SELECT status FROM goals WHERE id = 'old-week'",
+    ).first()).toEqual({ status: "needs_review" });
   });
 });
 

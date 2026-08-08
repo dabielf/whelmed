@@ -30,6 +30,18 @@ type MenuEntry = {
   position: number;
 };
 
+type GoalHorizon = "week" | "month" | "year" | "someday";
+
+type Goal = {
+  id: string;
+  text: string;
+  horizon: GoalHorizon;
+  periodStart: string | null;
+  position: number;
+};
+
+type GoalLists = Record<GoalHorizon, Goal[]>;
+
 type Today = {
   date: string;
   timeZone: {
@@ -37,6 +49,7 @@ type Today = {
     effectiveTimeZone: string;
     needsConfirmation: boolean;
   };
+  goals: GoalLists;
   values: Value[];
 };
 
@@ -62,6 +75,17 @@ const navigation: { route: Route; label: string }[] = [
   { route: "history", label: "History" },
   { route: "settings", label: "Settings" },
 ];
+
+const goalHorizons: { horizon: GoalHorizon; label: string }[] = [
+  { horizon: "week", label: "Week" },
+  { horizon: "month", label: "Month" },
+  { horizon: "year", label: "Year" },
+  { horizon: "someday", label: "Someday" },
+];
+
+function emptyGoalLists(): GoalLists {
+  return { week: [], month: [], year: [], someday: [] };
+}
 
 const browserTimeZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
 const timeZones = Intl.supportedValuesOf("timeZone");
@@ -169,67 +193,96 @@ function TodayPage({
 
       {loading ? (
         <p className="notice" aria-live="polite">Loading Today…</p>
-      ) : !data?.values.length ? (
-        <section className="empty-card">
-          <h2>Start with one Value</h2>
-          <p>A Value is a direction you want to express in how you act.</p>
-          <button className="primary-button" onClick={() => navigate("values")}>
-            Create a Value
-          </button>
-        </section>
       ) : (
-        <section className="daily-log" aria-labelledby="daily-log-title">
-          <div className="section-heading">
-            <h2 id="daily-log-title">Daily log</h2>
-          </div>
-          {data.values.map((value) => (
-            <article className="value-section" key={value.id}>
-              <header className="value-heading">
-                <div>
-                  <h3>{value.name}</h3>
-                  <p>{actionSummary(value.actions)}</p>
-                </div>
-                <button className="quiet-button" onClick={() => openAction(value)}>
-                  Add action
-                </button>
-              </header>
+        <div className="today-layout">
+          {!data?.values.length ? (
+            <section className="empty-card">
+              <h2>Start with one Value</h2>
+              <p>A Value is a direction you want to express in how you act.</p>
+              <button className="primary-button" onClick={() => navigate("values")}>
+                Create a Value
+              </button>
+            </section>
+          ) : (
+            <section className="daily-log" aria-labelledby="daily-log-title">
+              <div className="section-heading">
+                <h2 id="daily-log-title">Daily log</h2>
+              </div>
+              {data.values.map((value) => (
+                <article className="value-section" key={value.id}>
+                  <header className="value-heading">
+                    <div>
+                      <h3>{value.name}</h3>
+                      <p>{actionSummary(value.actions)}</p>
+                    </div>
+                    <button className="quiet-button" onClick={() => openAction(value)}>
+                      Add action
+                    </button>
+                  </header>
 
-              {value.actions.length > 0 && (
-                <ul className="action-list">
-                  {value.actions.map((action) => (
-                    <li className="action-row" key={action.id}>
-                      <button
-                        className="action-button"
-                        onClick={() => openAction(value, action)}
-                        type="button"
-                      >
-                        <span className={`state-mark ${action.status}`} aria-hidden="true">
-                          {action.status === "done" ? "✓" : "○"}
-                        </span>
-                        <span className="action-copy">
-                          <span>{action.text}</span>
-                          {action.values.some((linkedValue) => !linkedValue.isPrimary) && (
-                            <small>
-                              Also: {action.values
-                                .filter((linkedValue) => !linkedValue.isPrimary)
-                                .map((linkedValue) => linkedValue.name)
-                                .join(", ")}
-                            </small>
-                          )}
-                        </span>
-                        <span className="state-label">
-                          {action.status === "done" ? "Done" : "Planned"}
-                        </span>
-                      </button>
-                    </li>
-                  ))}
-                </ul>
-              )}
-            </article>
-          ))}
-        </section>
+                  {value.actions.length > 0 && (
+                    <ul className="action-list">
+                      {value.actions.map((action) => (
+                        <li className="action-row" key={action.id}>
+                          <button
+                            className="action-button"
+                            onClick={() => openAction(value, action)}
+                            type="button"
+                          >
+                            <span className={`state-mark ${action.status}`} aria-hidden="true">
+                              {action.status === "done" ? "✓" : "○"}
+                            </span>
+                            <span className="action-copy">
+                              <span>{action.text}</span>
+                              {action.values.some((linkedValue) => !linkedValue.isPrimary) && (
+                                <small>
+                                  Also: {action.values
+                                    .filter((linkedValue) => !linkedValue.isPrimary)
+                                    .map((linkedValue) => linkedValue.name)
+                                    .join(", ")}
+                                </small>
+                              )}
+                            </span>
+                            <span className="state-label">
+                              {action.status === "done" ? "Done" : "Planned"}
+                            </span>
+                          </button>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </article>
+              ))}
+            </section>
+          )}
+          <GoalDashboard goals={data?.goals ?? emptyGoalLists()} />
+        </div>
       )}
     </main>
+  );
+}
+
+function GoalDashboard({ goals }: { goals: GoalLists }) {
+  return (
+    <aside className="goal-dashboard" aria-labelledby="goals-in-view-title">
+      <p className="eyebrow">Direction</p>
+      <h2 id="goals-in-view-title">Goals in view</h2>
+      <p>Keep these nearby while choosing.</p>
+      <div className="goal-dashboard-lists">
+        {goalHorizons.map(({ horizon, label }) => (
+          <details key={horizon} open={horizon === "week"}>
+            <summary>{label}</summary>
+            {goals[horizon].length ? (
+              <ul>
+                {goals[horizon].map((goal) => <li key={goal.id}>{goal.text}</li>)}
+              </ul>
+            ) : (
+              <p className="goal-empty">No current Goals.</p>
+            )}
+          </details>
+        ))}
+      </div>
+    </aside>
   );
 }
 
@@ -725,9 +778,141 @@ function SettingsPage({
   );
 }
 
-function PlaceholderPage({ route }: { route: Exclude<Route, "today" | "values" | "settings"> }) {
+function GoalsPage({
+  goals,
+  loading,
+  createGoal,
+  moveGoal,
+}: {
+  goals: GoalLists;
+  loading: boolean;
+  createGoal: (horizon: GoalHorizon, text: string) => Promise<void>;
+  moveGoal: (horizon: GoalHorizon, id: string, direction: -1 | 1) => Promise<void>;
+}) {
+  return (
+    <main className="page goals-page">
+      <header className="page-heading">
+        <p className="eyebrow">Goals</p>
+        <h1>Current Goals</h1>
+        <p>Keep a few finishable outcomes nearby as friendly direction.</p>
+      </header>
+
+      {loading ? (
+        <p className="notice" aria-live="polite">Loading Goals…</p>
+      ) : (
+        <div className="goal-lists">
+          {goalHorizons.map(({ horizon, label }) => (
+            <GoalList
+              createGoal={createGoal}
+              goals={goals[horizon]}
+              horizon={horizon}
+              key={horizon}
+              label={label}
+              moveGoal={moveGoal}
+            />
+          ))}
+        </div>
+      )}
+    </main>
+  );
+}
+
+function GoalList({
+  horizon,
+  label,
+  goals,
+  createGoal,
+  moveGoal,
+}: {
+  horizon: GoalHorizon;
+  label: string;
+  goals: Goal[];
+  createGoal: (horizon: GoalHorizon, text: string) => Promise<void>;
+  moveGoal: (horizon: GoalHorizon, id: string, direction: -1 | 1) => Promise<void>;
+}) {
+  const [text, setText] = useState("");
+  const [error, setError] = useState("");
+  const [saving, setSaving] = useState(false);
+
+  async function changeGoalList(change: () => Promise<void>) {
+    setError("");
+    setSaving(true);
+    try {
+      await change();
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "Could not change the Goal List.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function submit(event: FormEvent) {
+    event.preventDefault();
+    await changeGoalList(async () => {
+      await createGoal(horizon, text);
+      setText("");
+    });
+  }
+
+  return (
+    <section className="goal-list-section" aria-labelledby={`${horizon}-goals-title`}>
+      <header>
+        <h2 id={`${horizon}-goals-title`}>{label}</h2>
+        <span>{goals.length}</span>
+      </header>
+      {goals.length ? (
+        <ul className="managed-goals">
+          {goals.map((goal, index) => (
+            <li key={goal.id}>
+              <span>{goal.text}</span>
+              <span className="goal-order-controls" aria-label={`Order ${goal.text}`}>
+                <button
+                  aria-label={`Move ${goal.text} up`}
+                  className="quiet-button"
+                  disabled={index === 0 || saving}
+                  onClick={() => void changeGoalList(() => moveGoal(horizon, goal.id, -1))}
+                  type="button"
+                >
+                  ↑
+                </button>
+                <button
+                  aria-label={`Move ${goal.text} down`}
+                  className="quiet-button"
+                  disabled={index === goals.length - 1 || saving}
+                  onClick={() => void changeGoalList(() => moveGoal(horizon, goal.id, 1))}
+                  type="button"
+                >
+                  ↓
+                </button>
+              </span>
+            </li>
+          ))}
+        </ul>
+      ) : (
+        <p className="goal-list-empty">No Goals here yet.</p>
+      )}
+      <form className="quick-add-goal" onSubmit={submit}>
+        <label className="field">
+          <span>Add a {label} Goal</span>
+          <input
+            maxLength={200}
+            onChange={(event) => setText(event.target.value)}
+            placeholder="A finishable outcome"
+            required
+            value={text}
+          />
+        </label>
+        <button className="primary-button" disabled={saving} type="submit">
+          {saving ? "Adding…" : "Add Goal"}
+        </button>
+      </form>
+      {error && <p className="form-error" role="alert">{error}</p>}
+    </section>
+  );
+}
+
+function PlaceholderPage({ route }: { route: "history" }) {
   const text = {
-    goals: ["Goals", "Friendly finish lines will live here."],
     history: ["History", "Past Done actions will live here."],
   }[route];
 
@@ -1020,6 +1205,8 @@ export default function App() {
   const [loading, setLoading] = useState(true);
   const [values, setValues] = useState<ManagedValue[]>([]);
   const [valuesLoading, setValuesLoading] = useState(true);
+  const [goals, setGoals] = useState<GoalLists>(emptyGoalLists);
+  const [goalsLoading, setGoalsLoading] = useState(true);
   const [error, setError] = useState("");
   const [actionTarget, setActionTarget] = useState<ActionTarget>();
 
@@ -1045,6 +1232,17 @@ export default function App() {
     }
   }, []);
 
+  const loadGoals = useCallback(async () => {
+    setError("");
+    try {
+      setGoals((await api<{ goals: GoalLists }>("/api/goals")).goals);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "Could not load Goals.");
+    } finally {
+      setGoalsLoading(false);
+    }
+  }, []);
+
   useEffect(() => {
     void loadToday();
     const onPopState = () => setRoute(routeFromPath());
@@ -1054,7 +1252,8 @@ export default function App() {
 
   useEffect(() => {
     if (route === "values") void loadValues();
-  }, [loadValues, route]);
+    if (route === "goals") void loadGoals();
+  }, [loadGoals, loadValues, route]);
 
   function navigate(nextRoute: Route) {
     window.history.pushState({}, "", `/${nextRoute}`);
@@ -1121,6 +1320,31 @@ export default function App() {
     await loadToday();
   }
 
+  async function createGoal(horizon: GoalHorizon, text: string) {
+    await api("/api/goals", {
+      body: JSON.stringify({ horizon, text }),
+      method: "POST",
+    });
+    await Promise.all([loadGoals(), loadToday()]);
+  }
+
+  async function moveGoal(
+    horizon: GoalHorizon,
+    id: string,
+    direction: -1 | 1,
+  ) {
+    const ids = goals[horizon].map((goal) => goal.id);
+    const index = ids.indexOf(id);
+    const target = index + direction;
+    if (index < 0 || target < 0 || target >= ids.length) return;
+    [ids[index], ids[target]] = [ids[target], ids[index]];
+    await api("/api/goals/order", {
+      body: JSON.stringify({ horizon, ids }),
+      method: "PUT",
+    });
+    await Promise.all([loadGoals(), loadToday()]);
+  }
+
   async function saveTimeZone(appTimeZone: string) {
     await api("/api/settings", {
       body: JSON.stringify({ appTimeZone }),
@@ -1150,8 +1374,16 @@ export default function App() {
           values={values}
         />
       )}
+      {route === "goals" && (
+        <GoalsPage
+          createGoal={createGoal}
+          goals={goals}
+          loading={goalsLoading}
+          moveGoal={moveGoal}
+        />
+      )}
       {route === "settings" && <SettingsPage data={today} saveTimeZone={saveTimeZone} />}
-      {route !== "today" && route !== "values" && route !== "settings" && <PlaceholderPage route={route} />}
+      {route === "history" && <PlaceholderPage route={route} />}
       <ActionDialog
         close={() => setActionTarget(undefined)}
         remove={removeAction}
