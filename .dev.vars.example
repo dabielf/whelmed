@@ -1,0 +1,2 @@
+# Local requests need this. Do not add it as a deployed Worker secret.
+LOCAL_DEV=true
