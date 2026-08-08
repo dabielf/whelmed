@@ -1,0 +1,520 @@
+<!doctype html>
+<!--
+  PROTOTYPE ONLY: three dashboard variants on one route, switched with ?variant=A|B|C.
+  Scene: François checks Whelmed on a phone or laptop during a low-energy day, in ordinary home light.
+  Direction: restrained moss accent, tinted paper neutrals, system type, visible dividers, no scoring or praise.
+-->
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Whelmed. dashboard prototype</title>
+    <link rel="icon" href="assets/whelmed-mascot-filled.png" />
+    <style>
+      :root {
+        color-scheme: light;
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+        --canvas: oklch(0.965 0.012 145);
+        --paper: oklch(0.99 0.006 145);
+        --ink: oklch(0.27 0.025 154);
+        --muted: oklch(0.49 0.025 151);
+        --line: oklch(0.86 0.022 148);
+        --accent: oklch(0.49 0.11 154);
+        --accent-strong: oklch(0.39 0.095 154);
+        --accent-soft: oklch(0.92 0.045 151);
+        --warm: oklch(0.92 0.048 78);
+        --focus: oklch(0.62 0.14 242);
+        --shadow: 0 14px 40px oklch(0.26 0.02 150 / 0.12);
+      }
+
+      * { box-sizing: border-box; }
+      body { margin: 0; min-height: 100vh; color: var(--ink); background: var(--canvas); }
+      button, input, select { font: inherit; }
+      button, summary { cursor: pointer; }
+      button:focus-visible, input:focus-visible, select:focus-visible, summary:focus-visible, a:focus-visible {
+        outline: 3px solid var(--focus);
+        outline-offset: 2px;
+      }
+      button { color: inherit; }
+      .shell { min-height: 100vh; padding: 0 0 6rem; }
+      .topbar { display: flex; align-items: center; justify-content: space-between; gap: 1rem; padding: 1.15rem clamp(1rem, 4vw, 3.5rem); border-bottom: 1px solid var(--line); }
+      .brand-lockup { display: inline-flex; align-items: center; gap: 0.48rem; }
+      .brand { font-size: 1.05rem; font-weight: 750; letter-spacing: -0.02em; }
+      .brand-mascot { position: relative; width: 2rem; height: 2rem; flex: 0 0 auto; overflow: hidden; }
+      .brand-mascot img { position: absolute; width: 3.45rem; height: 3.45rem; left: -0.72rem; top: -0.52rem; max-width: none; }
+      .date { color: var(--muted); font-size: 0.88rem; }
+      .eyebrow { margin: 0; color: var(--muted); font-size: 0.75rem; font-weight: 720; letter-spacing: 0.06em; text-transform: uppercase; }
+      h1, h2, h3, p { margin-top: 0; }
+      h1 { margin-bottom: 0.35rem; font-size: clamp(1.7rem, 4vw, 2.45rem); line-height: 1.08; letter-spacing: -0.045em; }
+      h2 { font-size: 1.15rem; letter-spacing: -0.025em; }
+      h3 { font-size: 1rem; }
+      .muted { color: var(--muted); }
+      .quiet-button, .primary-button, .check-button, .value-button, .menu-button, .tag-button {
+        border: 1px solid var(--line); border-radius: 0.65rem; background: var(--paper); min-height: 2.65rem; padding: 0.62rem 0.82rem;
+      }
+      .primary-button { border-color: var(--accent); background: var(--accent); color: var(--paper); font-weight: 720; }
+      .primary-button:hover { background: var(--accent-strong); }
+      .quiet-button:hover, .menu-button:hover, .tag-button:hover { border-color: var(--accent); background: var(--accent-soft); }
+      .goal-band { display: grid; grid-template-columns: minmax(7rem, 0.55fr) repeat(3, minmax(10rem, 1fr)); gap: 0; border-bottom: 1px solid var(--line); background: var(--paper); }
+      .goal-band > * { padding: 0.85rem 1rem; border-right: 1px solid var(--line); }
+      .goal-band > *:last-child { border-right: 0; }
+      .goal-horizon { display: block; margin-bottom: 0.18rem; color: var(--muted); font-size: 0.72rem; font-weight: 720; text-transform: uppercase; }
+      .goal-text { font-size: 0.9rem; line-height: 1.35; }
+      .goal-items { display: grid; gap: 0.38rem; margin: 0.38rem 0 0; padding: 0; list-style: none; }
+      .goal-items li { font-size: 0.9rem; line-height: 1.35; }
+      .goal-items li + li { padding-top: 0.38rem; border-top: 1px solid var(--line); }
+      .completion { display: flex; align-items: center; gap: 0.65rem; color: var(--muted); font-size: 0.9rem; }
+      .completion-mark { display: grid; place-items: center; width: 1.75rem; height: 1.75rem; flex: 0 0 auto; border: 1px solid var(--line); border-radius: 50%; background: var(--paper); font-weight: 800; }
+      .completion.complete { color: var(--accent-strong); }
+      .completion.complete .completion-mark { border-color: var(--accent); background: var(--accent-soft); }
+      .action-list { display: grid; gap: 0.5rem; margin: 0.75rem 0; }
+      .action-row { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 0.65rem; align-items: start; padding: 0.58rem 0; border-bottom: 1px solid var(--line); }
+      .action-row:last-child { border-bottom: 0; }
+      .check-button { display: grid; place-items: center; width: 2.4rem; min-height: 2.4rem; padding: 0; border-radius: 50%; font-weight: 850; }
+      .check-button[aria-pressed="true"] { border-color: var(--accent); background: var(--accent-soft); color: var(--accent-strong); }
+      .action-text { padding-top: 0.46rem; line-height: 1.35; }
+      .action-text.done { color: var(--muted); text-decoration: line-through; text-decoration-thickness: 1px; }
+      .action-tools { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 0.35rem; }
+      .tag-button, .menu-button { min-height: 2.15rem; padding: 0.38rem 0.55rem; font-size: 0.78rem; }
+      details.add-value { position: relative; }
+      details.add-value summary { list-style: none; min-height: 2.15rem; padding: 0.42rem 0.56rem; border: 1px solid var(--line); border-radius: 0.65rem; background: var(--paper); font-size: 0.78rem; }
+      details.add-value summary::-webkit-details-marker { display: none; }
+      .value-picker { position: absolute; z-index: 5; right: 0; top: calc(100% + 0.35rem); width: max-content; max-width: min(18rem, 80vw); padding: 0.45rem; border: 1px solid var(--line); border-radius: 0.75rem; background: var(--paper); box-shadow: var(--shadow); }
+      .value-picker button { display: block; width: 100%; border: 0; border-radius: 0.45rem; background: transparent; padding: 0.55rem 0.65rem; text-align: left; }
+      .value-picker button:hover { background: var(--accent-soft); }
+      .composer { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 0.55rem; margin-top: 0.7rem; }
+      .composer input, .composer select { width: 100%; min-height: 2.75rem; border: 1px solid var(--line); border-radius: 0.65rem; background: var(--paper); color: var(--ink); padding: 0.65rem 0.75rem; }
+      .composer input::placeholder { color: var(--muted); }
+      .menu { margin-top: 0.6rem; }
+      .menu summary { color: var(--accent-strong); font-size: 0.86rem; font-weight: 700; }
+      .menu-options { display: flex; flex-wrap: wrap; gap: 0.42rem; margin-top: 0.55rem; }
+      .empty { margin: 0.75rem 0; color: var(--muted); font-size: 0.88rem; }
+
+      /* A: values keep their place. */
+      .a-main { width: min(64rem, 100%); margin: 0 auto; padding: 2.2rem clamp(1rem, 4vw, 3rem); }
+      .a-intro { display: flex; align-items: end; justify-content: space-between; gap: 2rem; margin-bottom: 1.8rem; }
+      .value-lanes { border-top: 1px solid var(--ink); }
+      .value-lane { display: grid; grid-template-columns: minmax(9rem, 0.75fr) minmax(0, 2fr); gap: 2rem; padding: 1.35rem 0; border-bottom: 1px solid var(--line); }
+      .value-lane h2 { margin-bottom: 0.35rem; }
+      .value-state { color: var(--muted); font-size: 0.82rem; }
+      .value-state.met { color: var(--accent-strong); }
+
+      /* B: one value receives attention. */
+      .b-shell { background: var(--paper); }
+      .b-header { display: grid; grid-template-columns: minmax(12rem, 0.7fr) minmax(0, 1.6fr); border-bottom: 1px solid var(--line); }
+      .b-header > * { padding: 1.35rem clamp(1rem, 3vw, 2.4rem); }
+      .b-header > * + * { border-left: 1px solid var(--line); }
+      .b-main { display: grid; grid-template-columns: minmax(12rem, 0.72fr) minmax(20rem, 1.6fr) minmax(13rem, 0.8fr); min-height: calc(100vh - 9rem); }
+      .b-main > *, .b-header > * { min-width: 0; }
+      .value-nav, .focus-work, .goal-margin { padding: 1.5rem clamp(1rem, 2.5vw, 2rem); }
+      .value-nav, .focus-work { border-right: 1px solid var(--line); }
+      .value-nav-list { display: grid; gap: 0.35rem; margin-top: 1rem; }
+      .value-button { display: grid; grid-template-columns: 1fr auto; gap: 0.5rem; width: 100%; border-color: transparent; background: transparent; text-align: left; }
+      .value-button.current { border-color: var(--accent); background: var(--accent-soft); }
+      .value-button:hover { background: var(--canvas); }
+      .value-dot { font-weight: 850; color: var(--muted); }
+      .value-dot.met { color: var(--accent-strong); }
+      .focus-heading { max-width: 38rem; padding-bottom: 1rem; border-bottom: 1px solid var(--line); }
+      .goal-margin { background: var(--canvas); }
+      .goal-note { padding: 0.8rem 0; border-bottom: 1px solid var(--line); }
+
+      /* C: the day is a simple log. */
+      .c-main { width: min(74rem, 100%); margin: 0 auto; padding: 1.6rem clamp(1rem, 4vw, 3rem); }
+      .status-strip { display: grid; grid-template-columns: repeat(auto-fit, minmax(9rem, 1fr)); margin: 1.35rem 0 2.6rem; border-block: 1px solid var(--line); }
+      .status-item { min-width: 0; padding: 0.8rem 1rem; border-right: 1px solid var(--line); }
+      .status-item:last-child { border-right: 0; }
+      .status-item span { display: block; margin-top: 0.2rem; color: var(--muted); font-size: 0.78rem; }
+      .status-item.met span { color: var(--accent-strong); }
+      .day-sheet { display: grid; grid-template-columns: minmax(0, 1.6fr) minmax(14rem, 0.65fr); gap: clamp(2rem, 7vw, 6rem); }
+      .log-head { display: flex; align-items: end; justify-content: space-between; gap: 1rem; margin-bottom: 0.8rem; }
+      .log-row { display: grid; grid-template-columns: 5.5rem minmax(0, 1fr); gap: 1rem; padding: 0.7rem 0; }
+      .log-row + .log-row { margin-top: 0.55rem; }
+      .log-row .action-row { border-bottom: 0; }
+      .log-value { color: var(--muted); font-size: 0.8rem; padding-top: 0.58rem; }
+      .value-log { display: grid; gap: 1.35rem; }
+      .value-log-section + .value-log-section { padding-top: 1.35rem; border-top: 1px solid var(--line); }
+      .value-log-heading { display: flex; align-items: center; justify-content: space-between; gap: 1rem; }
+      .value-log-heading h3 { margin: 0 0 0.18rem; font-size: 1.02rem; }
+      .value-log-heading p { margin: 0; color: var(--muted); font-size: 0.8rem; }
+      .value-log-section .action-row { border-bottom: 0; }
+      .goal-list { border: 0; }
+      .c-goals { position: sticky; top: 1rem; align-self: start; padding: 1.05rem 1.15rem; background: var(--paper); }
+      .c-goals h2 { margin: 0.25rem 0 0.25rem; font-size: 1.2rem; }
+      .c-goals > p { margin-bottom: 1rem; font-size: 0.88rem; }
+      .goal-section summary { padding: 0.75rem 0; color: var(--ink); font-size: 0.92rem; font-weight: 800; letter-spacing: 0.035em; text-transform: uppercase; }
+      .goal-section summary::marker { color: var(--accent); }
+      .goal-section .goal-items { margin: 0 0 0.7rem; padding-left: 1.15rem; }
+      .c-goals .goal-items li { font-size: 0.88rem; font-weight: 500; }
+      .c-goals .goal-note { padding: 0.2rem 0; border: 0; }
+      .c-goals .goal-items { gap: 0.48rem; }
+      .c-goals .goal-items li + li { padding-top: 0; border: 0; }
+      .c-header { display: grid; grid-template-columns: auto 1fr auto; border-bottom: 1px solid var(--line); }
+      .app-nav { display: flex; justify-content: center; gap: 0.25rem; }
+      .app-nav button { min-height: 2.5rem; border: 0; border-radius: 0.65rem; background: transparent; padding: 0.5rem 0.68rem; color: var(--muted); font-size: 0.86rem; font-weight: 650; }
+      .app-nav button:hover { color: var(--ink); background: var(--paper); }
+      .app-nav button[aria-current="page"] { color: var(--accent-strong); background: var(--accent-soft); font-weight: 800; }
+      .placeholder-page { width: min(44rem, 100%); margin: 0 auto; padding: clamp(4rem, 12vh, 8rem) clamp(1rem, 5vw, 3rem); }
+      .placeholder-page p:not(.eyebrow) { max-width: 42rem; color: var(--muted); font-size: 1.05rem; line-height: 1.55; }
+      .action-dialog { width: min(36rem, calc(100vw - 2rem)); max-height: min(48rem, calc(100vh - 2rem)); border: 0; border-radius: 1rem; background: var(--paper); color: var(--ink); padding: 0; box-shadow: var(--shadow); }
+      .action-dialog::backdrop { background: oklch(0.2 0.02 150 / 0.48); }
+      .dialog-body { display: grid; gap: 1.15rem; padding: 1.35rem; }
+      .dialog-head { display: flex; align-items: start; justify-content: space-between; gap: 1rem; }
+      .dialog-head h2 { margin: 0.2rem 0 0; font-size: 1.35rem; }
+      .close-button { width: 2.6rem; min-height: 2.6rem; border: 0; border-radius: 50%; background: var(--canvas); font-size: 1.2rem; }
+      .field { display: grid; gap: 0.42rem; }
+      .field > span, .dialog-options legend { font-size: 0.8rem; font-weight: 760; }
+      .field input[type="text"] { width: 100%; min-height: 2.9rem; border: 1px solid var(--line); border-radius: 0.65rem; background: var(--canvas); padding: 0.7rem 0.78rem; }
+      .dialog-options { display: grid; gap: 0.62rem; margin: 0; border: 0; padding: 0; }
+      .dialog-checks { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.45rem 1rem; }
+      .check-label { display: flex; align-items: start; gap: 0.5rem; font-size: 0.87rem; line-height: 1.35; }
+      .check-label input { width: 1.05rem; height: 1.05rem; margin-top: 0.08rem; accent-color: var(--accent); }
+      .dialog-actions { display: flex; justify-content: flex-end; gap: 0.55rem; padding-top: 0.3rem; }
+      .menu-browser { margin-top: 0.7rem; }
+      .menu-browser input { width: 100%; min-height: 2.7rem; border: 1px solid var(--line); border-radius: 0.65rem; background: var(--canvas); padding: 0.65rem 0.75rem; }
+      .menu-results { display: grid; max-height: 13rem; overflow: auto; margin-top: 0.55rem; }
+      .menu-result { border: 0; border-radius: 0.45rem; background: transparent; padding: 0.68rem 0.25rem; text-align: left; }
+      .menu-result:hover { color: var(--accent-strong); background: var(--accent-soft); }
+
+      .prototype-switcher { position: fixed; z-index: 20; left: 50%; bottom: 1rem; transform: translateX(-50%); display: flex; align-items: center; gap: 0.25rem; min-width: min(25rem, calc(100vw - 2rem)); padding: 0.38rem; border: 1px solid oklch(0.34 0.02 150); border-radius: 999px; background: oklch(0.25 0.025 153); color: oklch(0.96 0.01 150); box-shadow: var(--shadow); }
+      .prototype-switcher button { width: 2.65rem; height: 2.65rem; border: 0; border-radius: 50%; background: transparent; color: inherit; font-size: 1.1rem; }
+      .prototype-switcher button:hover { background: oklch(0.38 0.03 153); }
+      .prototype-label { flex: 1; text-align: center; font-size: 0.82rem; font-weight: 720; }
+
+      @media (max-width: 760px) {
+        .goal-band { grid-template-columns: 1fr; }
+        .goal-band > * { border-right: 0; border-bottom: 1px solid var(--line); }
+        .goal-band > *:last-child { border-bottom: 0; }
+        .a-intro { display: grid; gap: 1rem; }
+        .value-lane { grid-template-columns: 1fr; gap: 0.45rem; }
+        .action-row { grid-template-columns: auto minmax(0, 1fr); }
+        .action-tools { grid-column: 2; justify-content: flex-start; }
+        .b-header { grid-template-columns: 1fr; }
+        .b-header > * + * { border-left: 0; border-top: 1px solid var(--line); }
+        .b-main { grid-template-columns: 1fr; }
+        .value-nav, .focus-work { border-right: 0; border-bottom: 1px solid var(--line); }
+        .value-nav-list { display: flex; overflow-x: auto; }
+        .value-button { min-width: 10rem; }
+        .day-sheet { grid-template-columns: 1fr; }
+        .c-goals { position: static; order: -1; }
+        .composer { grid-template-columns: 1fr; }
+        .c-header { grid-template-columns: 1fr auto; }
+        .c-header .app-nav { grid-column: 1 / -1; display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); width: 100%; }
+        .c-header .app-nav button { padding-inline: 0.2rem; font-size: 0.72rem; }
+        .action-dialog { width: 100%; max-width: none; max-height: calc(100vh - 1rem); margin: auto 0 0; border-radius: 1rem 1rem 0 0; }
+        .dialog-checks { grid-template-columns: 1fr; }
+      }
+
+      @media (max-width: 520px) {
+        .status-strip { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+        .status-item { border-bottom: 1px solid var(--line); }
+        .status-item:nth-child(2n) { border-right: 0; }
+        .status-item:last-child:nth-child(odd) { grid-column: 1 / -1; border-bottom: 0; }
+      }
+
+      @media (prefers-reduced-motion: reduce) {
+        *, *::before, *::after { scroll-behavior: auto !important; transition: none !important; animation: none !important; }
+      }
+    </style>
+  </head>
+  <body>
+    <main id="app"></main>
+    <script>
+      const state = {
+        focusValueId: "care",
+        composeValueId: "care",
+        modalValueId: "care",
+        route: "today",
+        nextId: 10,
+        values: [
+          { id: "care", name: "Self-care", menu: ["Drink a glass of water", "Step outside for five minutes", "Make the next meal easier", "Take my medication", "Put my phone down for ten minutes", "Cancel one non-essential thing", "Change into comfortable clothes", "Write down what I need", "Stretch for one minute", "Ask for help with one thing"] },
+          { id: "connection", name: "Connection", menu: ["Send one honest message", "Ask someone how they are", "Share ten quiet minutes", "Reply to one waiting message", "Invite someone for coffee", "Send a voice note", "Thank someone directly", "Sit near someone I trust", "Share one small truth", "Ask for company"] },
+          { id: "curiosity", name: "Curiosity", menu: ["Read one page", "Write down one question", "Try one small experiment", "Look up one unfamiliar word", "Watch one useful explanation", "Ask why this works", "Open a book at random", "Take apart one assumption", "Follow one interesting link", "Notice one new detail"] },
+          { id: "creativity", name: "Creativity", menu: ["Sketch for five minutes", "Write one rough paragraph", "Take one interesting photo", "Make something badly on purpose", "Collect three references", "Change one thing in a recipe", "Record a melody", "Arrange objects into a pattern", "Doodle while thinking", "Finish one tiny piece"] },
+          { id: "contribution", name: "Contribution", menu: ["Share one useful resource", "Help with one small task", "Check in on a neighbour", "Explain something I know", "Leave a thoughtful comment", "Donate one unused item", "Fix one shared annoyance", "Offer a clear introduction", "Make one process easier", "Celebrate someone’s work"] }
+        ],
+        actions: [],
+        goalLists: [
+          { horizon: "Week", goals: ["Send one job application", "Book the dentist appointment"] },
+          { horizon: "Month", goals: ["Choose a clearer CV direction", "Sort the papers on my desk"] },
+          { horizon: "Someday", goals: ["Live closer to trees", "Learn enough pottery to make a mug"] }
+        ]
+      };
+
+      const variants = {
+        A: "Values in place",
+        B: "One Value at a time",
+        C: "Today’s log"
+      };
+
+      const app = document.querySelector("#app");
+      const currentVariant = () => {
+        const value = new URLSearchParams(location.search).get("variant")?.toUpperCase();
+        return variants[value] ? value : "A";
+      };
+      const actionsFor = (valueId) => state.actions.filter((action) => action.valueIds.includes(valueId));
+      const valueIsMet = (valueId) => actionsFor(valueId).some((action) => action.done);
+      const metCount = () => state.values.filter((value) => valueIsMet(value.id)).length;
+      const dayIsComplete = () => metCount() === state.values.length;
+      const valueName = (id) => state.values.find((value) => value.id === id)?.name ?? "Value";
+
+      function goalsBand() {
+        return `<section class="goal-band" aria-label="Goals in view">
+          <div><p class="eyebrow">Goals in view</p></div>
+          ${state.goalLists.map((list) => `<div><span class="goal-horizon">${list.horizon}</span><ul class="goal-items">${list.goals.map((goal) => `<li>${goal}</li>`).join("")}</ul></div>`).join("")}
+        </section>`;
+      }
+
+      function brandLockup() {
+        return `<span class="brand-lockup"><span class="brand-mascot" aria-hidden="true"><img src="assets/whelmed-mascot-transparent.png" alt="" /></span><span class="brand">Whelmed.</span></span>`;
+      }
+
+      function appNav() {
+        const destinations = [
+          ["today", "Today"],
+          ["values", "Values"],
+          ["goals", "Goals"],
+          ["history", "History"],
+          ["settings", "Settings"]
+        ];
+        return `<nav class="app-nav" aria-label="App navigation">${destinations.map(([route, label]) => `<button type="button" data-route="${route}" ${state.route === route ? 'aria-current="page"' : ""}>${label}</button>`).join("")}</nav>`;
+      }
+
+      function placeholderPage() {
+        const pages = {
+          values: ["Values", "Set Active and Paused Values, then edit each Value’s Action Menu."],
+          goals: ["Goals", "Manage Week, Month, and Someday Goals, including which ones appear on Today."],
+          history: ["History", "Review past days, correct Daily Actions, and compare action counts by Value."],
+          settings: ["Settings", "Change the small preferences that shape how Whelmed. works for you."]
+        };
+        const [title, description] = pages[state.route];
+        return `<section class="placeholder-page"><p class="eyebrow">Prototype destination</p><h1>${title}</h1><p>${description}</p><button class="primary-button" type="button" data-route="today">Back to Today</button></section>`;
+      }
+
+      function actionDialog() {
+        const value = state.values.find((item) => item.id === state.modalValueId) ?? state.values[0];
+        const otherValues = state.values.filter((item) => item.id !== value.id);
+        return `<dialog class="action-dialog" id="action-dialog" aria-labelledby="action-dialog-title">
+          <form class="dialog-body" data-dialog-form>
+            <header class="dialog-head"><div><p class="eyebrow">${value.name}</p><h2 id="action-dialog-title">Add an action</h2></div><button class="close-button" type="button" data-close-dialog aria-label="Close">×</button></header>
+            <label class="field"><span>Action</span><input type="text" name="action" placeholder="What did you do, or what will you do?" autocomplete="off" required /></label>
+            <details class="menu"><summary>Open the menu</summary><div class="menu-browser"><input id="dialog-menu-search" data-menu-filter aria-label="Filter ${value.name} Action Menu" placeholder="Type to filter" autocomplete="off" /><div class="menu-results">${value.menu.map((text) => `<button class="menu-result" type="button" data-fill-action data-menu-text="${text}">${text}</button>`).join("")}</div><p class="empty" data-menu-empty hidden>No matching idea.</p></div></details>
+            <fieldset class="dialog-options"><legend>Also add to another Value</legend><div class="dialog-checks">${otherValues.map((item) => `<label class="check-label"><input type="checkbox" name="additional-value" value="${item.id}" />${item.name}</label>`).join("")}</div></fieldset>
+            <div class="dialog-checks"><label class="check-label"><input type="checkbox" name="done" />Already done</label><label class="check-label"><input type="checkbox" name="save" />Save this free entry to ${value.name} menu</label></div>
+            <footer class="dialog-actions"><button class="quiet-button" type="button" data-close-dialog>Cancel</button><button class="primary-button" type="submit">Add action</button></footer>
+          </form>
+        </dialog>`;
+      }
+
+      function completion() {
+        const complete = dayIsComplete();
+        return `<div class="completion ${complete ? "complete" : ""}" aria-live="polite">
+          <span class="completion-mark" aria-hidden="true">${complete ? "✓" : metCount()}</span>
+          <span>${complete ? "Today is complete" : `${metCount()} of ${state.values.length} Values have a done action`}</span>
+        </div>`;
+      }
+
+      function actionRow(action, shownUnder) {
+        const available = state.values.filter((value) => !action.valueIds.includes(value.id));
+        const extraNames = action.valueIds.filter((id) => id !== shownUnder).map(valueName);
+        return `<div class="action-row">
+          <button class="check-button" type="button" data-toggle="${action.id}" aria-label="${action.done ? "Mark as not done" : "Mark as done"}" aria-pressed="${action.done}">${action.done ? "✓" : ""}</button>
+          <div>
+            <div class="action-text ${action.done ? "done" : ""}">${action.text}</div>
+            ${extraNames.length ? `<div class="muted" style="font-size:.76rem;margin-top:.2rem">Also: ${extraNames.join(", ")}</div>` : ""}
+          </div>
+          <div class="action-tools">
+            ${action.saved ? "" : `<button class="menu-button" type="button" data-save="${action.id}">Save to menu</button>`}
+            ${available.length ? `<details class="add-value"><summary>Add another Value</summary><div class="value-picker">${available.map((value) => `<button type="button" data-link-action="${action.id}" data-link-value="${value.id}">${value.name}</button>`).join("")}</div></details>` : ""}
+          </div>
+        </div>`;
+      }
+
+      function actionList(value) {
+        const actions = actionsFor(value.id);
+        return actions.length ? `<div class="action-list">${actions.map((action) => actionRow(action, value.id)).join("")}</div>` : `<p class="empty">No action here yet.</p>`;
+      }
+
+      function menu(value) {
+        return `<details class="menu"><summary>Choose from ${value.name} menu</summary><div class="menu-options">${value.menu.map((text) => `<button class="menu-button" type="button" data-use-menu="${value.id}" data-menu-text="${text}">${text}</button>`).join("")}</div></details>`;
+      }
+
+      function composer(value) {
+        return `<form class="composer" data-add-form data-value-id="${value.id}">
+          <input name="action" aria-label="New action for ${value.name}" placeholder="Write an action for ${value.name}" autocomplete="off" required />
+          <button class="primary-button" type="submit">Add action</button>
+        </form>${menu(value)}`;
+      }
+
+      function renderA() {
+        return `<div class="shell">
+          <header class="topbar">${brandLockup()}<span class="date">Today · Saturday 8 August</span></header>
+          ${goalsBand()}
+          <div class="a-main">
+            <section class="a-intro"><div><p class="eyebrow">Today</p><h1>Keep your Values close.</h1></div>${completion()}</section>
+            <section class="value-lanes" aria-label="Active Values">
+              ${state.values.map((value) => `<article class="value-lane">
+                <header><h2>${value.name}</h2><span class="value-state ${valueIsMet(value.id) ? "met" : ""}">${valueIsMet(value.id) ? "An action is done" : "No done action yet"}</span></header>
+                <div>${actionList(value)}${composer(value)}</div>
+              </article>`).join("")}
+            </section>
+          </div>
+        </div>`;
+      }
+
+      function renderB() {
+        const value = state.values.find((item) => item.id === state.focusValueId) ?? state.values[0];
+        return `<div class="shell b-shell">
+          <header class="b-header"><div>${brandLockup()}<div class="date" style="margin-top:.25rem">Saturday 8 August</div></div><div>${completion()}</div></header>
+          <div class="b-main">
+            <nav class="value-nav" aria-label="Active Values"><p class="eyebrow">Active Values</p><div class="value-nav-list">
+              ${state.values.map((item) => `<button class="value-button ${item.id === value.id ? "current" : ""}" type="button" data-focus-value="${item.id}"><span>${item.name}</span><span class="value-dot ${valueIsMet(item.id) ? "met" : ""}" aria-label="${valueIsMet(item.id) ? "Done action exists" : "No done action"}">${valueIsMet(item.id) ? "✓" : "○"}</span></button>`).join("")}
+            </div></nav>
+            <section class="focus-work"><header class="focus-heading"><p class="eyebrow">In focus</p><h1>${value.name}</h1><p class="muted">Choose something useful now, or record what already happened.</p></header>${actionList(value)}${composer(value)}</section>
+            <aside class="goal-margin"><p class="eyebrow">Goals in view</p>${state.goalLists.map((list) => `<div class="goal-note"><span class="goal-horizon">${list.horizon}</span><ul class="goal-items">${list.goals.map((goal) => `<li>${goal}</li>`).join("")}</ul></div>`).join("")}</aside>
+          </div>
+        </div>`;
+      }
+
+      function renderC() {
+        const header = `<header class="topbar c-header">${brandLockup()}${appNav()}${completion()}</header>`;
+        if (state.route !== "today") return `<div class="shell">${header}${placeholderPage()}</div>`;
+        return `<div class="shell">
+          ${header}
+          <div class="c-main">
+            <header><p class="eyebrow">Saturday 8 August</p><h1>Today’s actions</h1></header>
+            <div class="day-sheet">
+              <section><div class="log-head"><h2 style="margin:0">Daily log</h2><span class="muted">${state.actions.length} ${state.actions.length === 1 ? "action" : "actions"}</span></div>
+                <div class="value-log">${state.values.map((value) => {
+                  const actions = actionsFor(value.id);
+                  return `<section class="value-log-section"><header class="value-log-heading"><div><h3>${value.name}</h3><p>${valueIsMet(value.id) ? "Done action exists" : actions.length ? "No done action yet" : "No action yet"}</p></div><button class="quiet-button" type="button" data-open-action="${value.id}">Add action</button></header>${actions.length ? `<div class="action-list">${actions.map((action) => actionRow(action, value.id)).join("")}</div>` : ""}</section>`;
+                }).join("")}</div>
+              </section>
+              <aside class="c-goals"><p class="eyebrow">Direction</p><h2>Goals in view</h2><p class="muted">Keep these nearby while choosing.</p><div class="goal-list">${state.goalLists.map((list, index) => `<details class="goal-note goal-section" ${index === 0 ? "open" : ""}><summary>${list.horizon}</summary><ul class="goal-items">${list.goals.map((goal) => `<li>${goal}</li>`).join("")}</ul></details>`).join("")}</div></aside>
+            </div>
+          </div>
+          ${actionDialog()}
+        </div>`;
+      }
+
+      function switcher(variant) {
+        return `<nav class="prototype-switcher" aria-label="Prototype variants">
+          <button type="button" data-previous aria-label="Previous variant">←</button>
+          <span class="prototype-label">${variant} · ${variants[variant]}</span>
+          <button type="button" data-next aria-label="Next variant">→</button>
+        </nav>`;
+      }
+
+      function render() {
+        const variant = currentVariant();
+        app.innerHTML = `${variant === "A" ? renderA() : variant === "B" ? renderB() : renderC()}${switcher(variant)}`;
+      }
+
+      function changeVariant(step) {
+        const keys = Object.keys(variants);
+        const index = keys.indexOf(currentVariant());
+        const next = keys[(index + step + keys.length) % keys.length];
+        const params = new URLSearchParams(location.search);
+        params.set("variant", next);
+        history.replaceState({}, "", `${location.pathname}?${params}`);
+        render();
+      }
+
+      document.addEventListener("submit", (event) => {
+        if (event.target.matches("[data-dialog-form]")) {
+          event.preventDefault();
+          const data = new FormData(event.target);
+          const text = data.get("action").trim();
+          if (!text) return;
+          const value = state.values.find((item) => item.id === state.modalValueId);
+          const valueIds = [value.id, ...data.getAll("additional-value")];
+          const saved = value.menu.includes(text) || data.get("save") === "on";
+          if (saved && !value.menu.includes(text)) value.menu.push(text);
+          state.actions.push({ id: state.nextId++, text, done: data.get("done") === "on", sourceValueId: value.id, valueIds, saved });
+          event.target.closest("dialog").close();
+          render();
+          return;
+        }
+        if (event.target.matches("[data-add-form]")) {
+          event.preventDefault();
+          const text = new FormData(event.target).get("action").trim();
+          if (!text) return;
+          const valueId = event.target.dataset.valueId;
+          state.actions.push({ id: state.nextId++, text, done: false, sourceValueId: valueId, valueIds: [valueId], saved: false });
+          render();
+        }
+        if (event.target.matches("[data-add-global]")) {
+          event.preventDefault();
+          const data = new FormData(event.target);
+          const text = data.get("action").trim();
+          const valueId = data.get("value");
+          if (!text) return;
+          state.actions.push({ id: state.nextId++, text, done: false, sourceValueId: valueId, valueIds: [valueId], saved: false });
+          render();
+        }
+      });
+
+      document.addEventListener("click", (event) => {
+        const button = event.target.closest("button");
+        if (!button) return;
+        if (button.dataset.route) { state.route = button.dataset.route; render(); return; }
+        if (button.dataset.openAction) {
+          state.modalValueId = button.dataset.openAction;
+          render();
+          const dialog = document.querySelector("#action-dialog");
+          dialog.showModal();
+          dialog.querySelector('input[name="action"]').focus();
+          return;
+        }
+        if (button.hasAttribute("data-close-dialog")) { button.closest("dialog").close(); return; }
+        if (button.hasAttribute("data-fill-action")) {
+          const dialog = button.closest("dialog");
+          dialog.querySelector('input[name="action"]').value = button.dataset.menuText;
+          dialog.querySelector('input[name="action"]').focus();
+          return;
+        }
+        if (button.hasAttribute("data-previous")) changeVariant(-1);
+        if (button.hasAttribute("data-next")) changeVariant(1);
+        if (button.dataset.focusValue) { state.focusValueId = button.dataset.focusValue; render(); }
+        if (button.dataset.toggle) { const action = state.actions.find((item) => item.id === Number(button.dataset.toggle)); action.done = !action.done; render(); }
+        if (button.dataset.save) {
+          const action = state.actions.find((item) => item.id === Number(button.dataset.save));
+          const value = state.values.find((item) => item.id === action.sourceValueId);
+          if (!value.menu.includes(action.text)) value.menu.push(action.text);
+          action.saved = true;
+          render();
+        }
+        if (button.dataset.linkAction) {
+          const action = state.actions.find((item) => item.id === Number(button.dataset.linkAction));
+          action.valueIds.push(button.dataset.linkValue);
+          render();
+        }
+        if (button.dataset.useMenu) {
+          const valueId = button.dataset.useMenu;
+          state.actions.push({ id: state.nextId++, text: button.dataset.menuText, done: false, sourceValueId: valueId, valueIds: [valueId], saved: true });
+          render();
+        }
+      });
+
+      document.addEventListener("input", (event) => {
+        if (!event.target.matches("[data-menu-filter]")) return;
+        const browser = event.target.closest(".menu-browser");
+        const query = event.target.value.trim().toLowerCase();
+        let matches = 0;
+        browser.querySelectorAll("[data-menu-text]").forEach((button) => {
+          const visible = button.dataset.menuText.toLowerCase().includes(query);
+          button.hidden = !visible;
+          if (visible) matches += 1;
+        });
+        browser.querySelector("[data-menu-empty]").hidden = matches !== 0;
+      });
+
+      document.addEventListener("keydown", (event) => {
+        if (["INPUT", "TEXTAREA", "SELECT"].includes(document.activeElement.tagName) || document.activeElement.isContentEditable) return;
+        if (event.key === "ArrowLeft") changeVariant(-1);
+        if (event.key === "ArrowRight") changeVariant(1);
+      });
+
+      render();
+    </script>
+  </body>
+</html>
