@@ -42,6 +42,17 @@ type Goal = {
 
 type GoalLists = Record<GoalHorizon, Goal[]>;
 
+type GoalChange =
+  | { action: "complete" | "restore" }
+  | { action: "move"; horizon: GoalHorizon; periodStart?: string };
+
+type GoalsData = {
+  goals: GoalLists;
+  upcoming: Goal[];
+  needsReview: Goal[];
+  completed: Goal[];
+};
+
 type Today = {
   date: string;
   timeZone: {
@@ -50,6 +61,7 @@ type Today = {
     needsConfirmation: boolean;
   };
   goals: GoalLists;
+  needsReviewCount: number;
   values: Value[];
 };
 
@@ -87,6 +99,15 @@ function emptyGoalLists(): GoalLists {
   return { week: [], month: [], year: [], someday: [] };
 }
 
+function emptyGoalsData(): GoalsData {
+  return {
+    goals: emptyGoalLists(),
+    upcoming: [],
+    needsReview: [],
+    completed: [],
+  };
+}
+
 const browserTimeZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
 const timeZones = Intl.supportedValuesOf("timeZone");
 
@@ -116,6 +137,20 @@ function formattedDate(date: string) {
     month: "long",
     weekday: "long",
   }).format(new Date(`${date}T12:00:00`));
+}
+
+function goalPeriodLabel(goal: Goal) {
+  if (!goal.periodStart) return "Someday";
+  if (goal.horizon === "year") return goal.periodStart.slice(0, 4);
+  const date = new Date(`${goal.periodStart}T12:00:00.000Z`);
+  if (goal.horizon === "month") {
+    return new Intl.DateTimeFormat("en-GB", { month: "long", year: "numeric" }).format(date);
+  }
+  return `Week of ${new Intl.DateTimeFormat("en-GB", {
+    day: "numeric",
+    month: "short",
+    year: "numeric",
+  }).format(date)}`;
 }
 
 function actionSummary(actions: Action[]) {
@@ -255,19 +290,43 @@ function TodayPage({
               ))}
             </section>
           )}
-          <GoalDashboard goals={data?.goals ?? emptyGoalLists()} />
+          <GoalDashboard
+            goals={data?.goals ?? emptyGoalLists()}
+            navigate={navigate}
+            needsReviewCount={data?.needsReviewCount ?? 0}
+          />
         </div>
       )}
     </main>
   );
 }
 
-function GoalDashboard({ goals }: { goals: GoalLists }) {
+function GoalDashboard({
+  goals,
+  needsReviewCount,
+  navigate,
+}: {
+  goals: GoalLists;
+  needsReviewCount: number;
+  navigate: (route: Route) => void;
+}) {
   return (
     <aside className="goal-dashboard" aria-labelledby="goals-in-view-title">
       <p className="eyebrow">Direction</p>
       <h2 id="goals-in-view-title">Goals in view</h2>
       <p>Keep these nearby while choosing.</p>
+      {needsReviewCount > 0 && (
+        <a
+          className="goal-review-link"
+          href="/goals"
+          onClick={(event) => {
+            event.preventDefault();
+            navigate("goals");
+          }}
+        >
+          {needsReviewCount} {needsReviewCount === 1 ? "Goal needs" : "Goals need"} review
+        </a>
+      )}
       <div className="goal-dashboard-lists">
         {goalHorizons.map(({ horizon, label }) => (
           <details key={horizon} open={horizon === "week"}>
@@ -779,23 +838,39 @@ function SettingsPage({
 }
 
 function GoalsPage({
-  goals,
+  data,
   loading,
   createGoal,
   moveGoal,
+  changeGoal,
+  removeGoal,
 }: {
-  goals: GoalLists;
+  data: GoalsData;
   loading: boolean;
-  createGoal: (horizon: GoalHorizon, text: string) => Promise<void>;
+  createGoal: (horizon: GoalHorizon, text: string, periodStart?: string) => Promise<void>;
   moveGoal: (horizon: GoalHorizon, id: string, direction: -1 | 1) => Promise<void>;
+  changeGoal: (id: string, change: GoalChange) => Promise<void>;
+  removeGoal: (goal: Goal) => Promise<void>;
 }) {
+  const [error, setError] = useState("");
+
+  async function runGoalChange(change: () => Promise<void>) {
+    setError("");
+    try {
+      await change();
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "Could not update this Goal.");
+    }
+  }
+
   return (
     <main className="page goals-page">
       <header className="page-heading">
         <p className="eyebrow">Goals</p>
-        <h1>Current Goals</h1>
+        <h1>Your Goals</h1>
         <p>Keep a few finishable outcomes nearby as friendly direction.</p>
       </header>
+      {error && <p className="form-error" role="alert">{error}</p>}
 
       {loading ? (
         <p className="notice" aria-live="polite">Loading Goals…</p>
@@ -804,14 +879,83 @@ function GoalsPage({
           {goalHorizons.map(({ horizon, label }) => (
             <GoalList
               createGoal={createGoal}
-              goals={goals[horizon]}
+              goals={data.goals[horizon]}
               horizon={horizon}
               key={horizon}
               label={label}
               moveGoal={moveGoal}
+              changeGoal={changeGoal}
+              removeGoal={removeGoal}
             />
           ))}
         </div>
+      )}
+
+      {!loading && (
+        <>
+          <section className="goal-state-section" aria-labelledby="upcoming-goals-title">
+            <header>
+              <h2 id="upcoming-goals-title">Upcoming</h2>
+              <span>{data.upcoming.length}</span>
+            </header>
+            {data.upcoming.length ? (
+              <ul className="managed-goals">
+                {data.upcoming.map((goal) => (
+                  <li key={goal.id}>
+                    <span className="goal-copy">
+                      <strong>{goal.text}</strong>
+                      <small>{goalPeriodLabel(goal)}</small>
+                    </span>
+                    <span className="goal-action-controls">
+                      <button className="quiet-button" onClick={() => void runGoalChange(() => changeGoal(goal.id, { action: "complete" }))} type="button">Done</button>
+                      <button className="danger-button" onClick={() => void runGoalChange(() => removeGoal(goal))} type="button">Delete</button>
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            ) : <p className="goal-list-empty">No Upcoming Goals.</p>}
+          </section>
+
+          <section className="goal-state-section" aria-labelledby="review-goals-title">
+            <header>
+              <h2 id="review-goals-title">Needs Review</h2>
+              <span>{data.needsReview.length}</span>
+            </header>
+            <p className="goal-section-help">Choose where each expired Goal goes next.</p>
+            {data.needsReview.length ? (
+              <ul className="review-goals">
+                {data.needsReview.map((goal) => (
+                  <NeedsReviewGoal
+                    changeGoal={changeGoal}
+                    goal={goal}
+                    key={goal.id}
+                    removeGoal={removeGoal}
+                  />
+                ))}
+              </ul>
+            ) : <p className="goal-list-empty">Nothing needs review.</p>}
+          </section>
+
+          <details className="completed-goals">
+            <summary>Completed Goals <span>{data.completed.length}</span></summary>
+            {data.completed.length ? (
+              <ul className="managed-goals">
+                {data.completed.map((goal) => (
+                  <li key={goal.id}>
+                    <span className="goal-copy">
+                      <strong>{goal.text}</strong>
+                      <small>{goalPeriodLabel(goal)}</small>
+                    </span>
+                    <span className="goal-action-controls">
+                      <button className="quiet-button" onClick={() => void runGoalChange(() => changeGoal(goal.id, { action: "restore" }))} type="button">Restore</button>
+                      <button className="danger-button" onClick={() => void runGoalChange(() => removeGoal(goal))} type="button">Delete</button>
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            ) : <p className="goal-list-empty">No Completed Goals.</p>}
+          </details>
+        </>
       )}
     </main>
   );
@@ -823,14 +967,19 @@ function GoalList({
   goals,
   createGoal,
   moveGoal,
+  changeGoal,
+  removeGoal,
 }: {
   horizon: GoalHorizon;
   label: string;
   goals: Goal[];
-  createGoal: (horizon: GoalHorizon, text: string) => Promise<void>;
+  createGoal: (horizon: GoalHorizon, text: string, periodStart?: string) => Promise<void>;
   moveGoal: (horizon: GoalHorizon, id: string, direction: -1 | 1) => Promise<void>;
+  changeGoal: (id: string, change: GoalChange) => Promise<void>;
+  removeGoal: (goal: Goal) => Promise<void>;
 }) {
   const [text, setText] = useState("");
+  const [periodStart, setPeriodStart] = useState("");
   const [error, setError] = useState("");
   const [saving, setSaving] = useState(false);
 
@@ -849,8 +998,9 @@ function GoalList({
   async function submit(event: FormEvent) {
     event.preventDefault();
     await changeGoalList(async () => {
-      await createGoal(horizon, text);
+      await createGoal(horizon, text, periodStart || undefined);
       setText("");
+      setPeriodStart("");
     });
   }
 
@@ -864,8 +1014,9 @@ function GoalList({
         <ul className="managed-goals">
           {goals.map((goal, index) => (
             <li key={goal.id}>
-              <span>{goal.text}</span>
-              <span className="goal-order-controls" aria-label={`Order ${goal.text}`}>
+              <strong>{goal.text}</strong>
+              <span className="goal-action-controls">
+                <span className="goal-order-controls" aria-label={`Order ${goal.text}`}>
                 <button
                   aria-label={`Move ${goal.text} up`}
                   className="quiet-button"
@@ -884,6 +1035,9 @@ function GoalList({
                 >
                   ↓
                 </button>
+                </span>
+                <button className="quiet-button" disabled={saving} onClick={() => void changeGoalList(() => changeGoal(goal.id, { action: "complete" }))} type="button">Done</button>
+                <button className="danger-button" disabled={saving} onClick={() => void changeGoalList(() => removeGoal(goal))} type="button">Delete</button>
               </span>
             </li>
           ))}
@@ -902,12 +1056,89 @@ function GoalList({
             value={text}
           />
         </label>
+        {horizon !== "someday" && (
+          <label className="field">
+            <span>Date in that {label} <small>Optional</small></span>
+            <input
+              onChange={(event) => setPeriodStart(event.target.value)}
+              type="date"
+              value={periodStart}
+            />
+          </label>
+        )}
         <button className="primary-button" disabled={saving} type="submit">
           {saving ? "Adding…" : "Add Goal"}
         </button>
       </form>
       {error && <p className="form-error" role="alert">{error}</p>}
     </section>
+  );
+}
+
+function NeedsReviewGoal({
+  goal,
+  changeGoal,
+  removeGoal,
+}: {
+  goal: Goal;
+  changeGoal: (id: string, change: GoalChange) => Promise<void>;
+  removeGoal: (goal: Goal) => Promise<void>;
+}) {
+  const [horizon, setHorizon] = useState<GoalHorizon>(goal.horizon);
+  const [periodStart, setPeriodStart] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+
+  async function runGoalChange(change: () => Promise<void>) {
+    setError("");
+    setSaving(true);
+    try {
+      await change();
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "Could not update this Goal.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <li>
+      <div className="review-goal-heading">
+        <strong>{goal.text}</strong>
+        <small>Former period: {goalPeriodLabel(goal)}</small>
+      </div>
+      <div className="review-goal-choice">
+        <label className="field">
+          <span>Move to</span>
+          <select onChange={(event) => setHorizon(event.target.value as GoalHorizon)} value={horizon}>
+            {goalHorizons.map((item) => <option key={item.horizon} value={item.horizon}>{item.label}</option>)}
+          </select>
+        </label>
+        {horizon !== "someday" && (
+          <label className="field">
+            <span>Date <small>Optional. Blank means current.</small></span>
+            <input onChange={(event) => setPeriodStart(event.target.value)} type="date" value={periodStart} />
+          </label>
+        )}
+        <button
+          className="primary-button"
+          disabled={saving}
+          onClick={() => void runGoalChange(() => changeGoal(goal.id, {
+            action: "move",
+            horizon,
+            periodStart: horizon === "someday" || !periodStart ? undefined : periodStart,
+          }))}
+          type="button"
+        >
+          Move Goal
+        </button>
+      </div>
+      <div className="review-goal-actions">
+        <button className="quiet-button" disabled={saving} onClick={() => void runGoalChange(() => changeGoal(goal.id, { action: "complete" }))} type="button">Done</button>
+        <button className="danger-button" disabled={saving} onClick={() => void runGoalChange(() => removeGoal(goal))} type="button">Delete</button>
+      </div>
+      {error && <p className="form-error" role="alert">{error}</p>}
+    </li>
   );
 }
 
@@ -1205,7 +1436,7 @@ export default function App() {
   const [loading, setLoading] = useState(true);
   const [values, setValues] = useState<ManagedValue[]>([]);
   const [valuesLoading, setValuesLoading] = useState(true);
-  const [goals, setGoals] = useState<GoalLists>(emptyGoalLists);
+  const [goalData, setGoalData] = useState<GoalsData>(emptyGoalsData);
   const [goalsLoading, setGoalsLoading] = useState(true);
   const [error, setError] = useState("");
   const [actionTarget, setActionTarget] = useState<ActionTarget>();
@@ -1235,7 +1466,7 @@ export default function App() {
   const loadGoals = useCallback(async () => {
     setError("");
     try {
-      setGoals((await api<{ goals: GoalLists }>("/api/goals")).goals);
+      setGoalData(await api<GoalsData>("/api/goals"));
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "Could not load Goals.");
     } finally {
@@ -1320,9 +1551,9 @@ export default function App() {
     await loadToday();
   }
 
-  async function createGoal(horizon: GoalHorizon, text: string) {
+  async function createGoal(horizon: GoalHorizon, text: string, periodStart?: string) {
     await api("/api/goals", {
-      body: JSON.stringify({ horizon, text }),
+      body: JSON.stringify({ horizon, text, periodStart }),
       method: "POST",
     });
     await Promise.all([loadGoals(), loadToday()]);
@@ -1333,7 +1564,7 @@ export default function App() {
     id: string,
     direction: -1 | 1,
   ) {
-    const ids = goals[horizon].map((goal) => goal.id);
+    const ids = goalData.goals[horizon].map((goal) => goal.id);
     const index = ids.indexOf(id);
     const target = index + direction;
     if (index < 0 || target < 0 || target >= ids.length) return;
@@ -1342,6 +1573,20 @@ export default function App() {
       body: JSON.stringify({ horizon, ids }),
       method: "PUT",
     });
+    await Promise.all([loadGoals(), loadToday()]);
+  }
+
+  async function changeGoal(id: string, change: GoalChange) {
+    await api(`/api/goals/${id}`, {
+      body: JSON.stringify(change),
+      method: "PATCH",
+    });
+    await Promise.all([loadGoals(), loadToday()]);
+  }
+
+  async function removeGoal(goal: Goal) {
+    if (!window.confirm(`Delete “${goal.text}”?`)) return;
+    await api(`/api/goals/${goal.id}`, { method: "DELETE" });
     await Promise.all([loadGoals(), loadToday()]);
   }
 
@@ -1376,10 +1621,12 @@ export default function App() {
       )}
       {route === "goals" && (
         <GoalsPage
+          changeGoal={changeGoal}
           createGoal={createGoal}
-          goals={goals}
+          data={goalData}
           loading={goalsLoading}
           moveGoal={moveGoal}
+          removeGoal={removeGoal}
         />
       )}
       {route === "settings" && <SettingsPage data={today} saveTimeZone={saveTimeZone} />}

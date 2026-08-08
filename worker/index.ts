@@ -43,6 +43,10 @@ type GoalRow = {
   position: number;
 };
 
+type StoredGoalRow = GoalRow & {
+  status: "active" | "completed" | "needs_review";
+};
+
 type GoalLists = Record<GoalHorizon, GoalRow[]>;
 
 let cachedIssuer = "";
@@ -242,6 +246,39 @@ function isGoalHorizon(value: unknown): value is GoalHorizon {
     ["week", "month", "year", "someday"].includes(value);
 }
 
+function isIsoDate(value: unknown): value is string {
+  if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+    return false;
+  }
+  const parsed = new Date(`${value}T00:00:00.000Z`);
+  return !Number.isNaN(parsed.valueOf()) && parsed.toISOString().slice(0, 10) === value;
+}
+
+function periodStartFor(horizon: GoalHorizon, date: string) {
+  return currentPeriodStarts(date)[horizon];
+}
+
+function goalPeriodFromInput(
+  horizon: GoalHorizon,
+  value: unknown,
+  date: string,
+): { periodStart: string | null } | { error: string } {
+  if (horizon === "someday") {
+    return value === undefined
+      ? { periodStart: null }
+      : { error: "Someday Goals do not use a date." };
+  }
+  if (value !== undefined && !isIsoDate(value)) {
+    return { error: "Choose a valid date." };
+  }
+  const periodStart = periodStartFor(horizon, isIsoDate(value) ? value : date);
+  const currentPeriodStart = periodStartFor(horizon, date);
+  if (!periodStart || !currentPeriodStart || periodStart < currentPeriodStart) {
+    return { error: "Choose the current or a future period." };
+  }
+  return { periodStart };
+}
+
 async function reconcileGoals(
   database: D1Database,
   date: string,
@@ -281,6 +318,46 @@ async function currentGoalLists(database: D1Database, date: string) {
   return lists;
 }
 
+async function upcomingGoals(database: D1Database, date: string) {
+  const periods = currentPeriodStarts(date);
+  const { results } = await database.prepare(
+    `SELECT id, text, horizon, period_start AS periodStart, position
+     FROM goals
+     WHERE status = 'active' AND (
+       (horizon = 'week' AND period_start > ?)
+       OR (horizon = 'month' AND period_start > ?)
+       OR (horizon = 'year' AND period_start > ?)
+     )
+     ORDER BY period_start,
+       CASE horizon WHEN 'week' THEN 0 WHEN 'month' THEN 1 ELSE 2 END,
+       position, created_at`,
+  ).bind(periods.week, periods.month, periods.year).all<GoalRow>();
+  return results;
+}
+
+async function goalsWithStatus(
+  database: D1Database,
+  status: "completed" | "needs_review",
+) {
+  const { results } = await database.prepare(
+    `SELECT id, text, horizon, period_start AS periodStart, position
+     FROM goals
+     WHERE status = ?
+     ORDER BY CASE horizon
+       WHEN 'week' THEN 0 WHEN 'month' THEN 1
+       WHEN 'year' THEN 2 ELSE 3 END,
+       period_start, position, created_at`,
+  ).bind(status).all<GoalRow>();
+  return results;
+}
+
+async function goalById(database: D1Database, id: string) {
+  return database.prepare(
+    `SELECT id, text, horizon, period_start AS periodStart, status, position
+     FROM goals WHERE id = ?`,
+  ).bind(id).first<StoredGoalRow>();
+}
+
 export function createApp(now: () => Date = () => new Date()) {
   const app = new Hono<AppBindings>();
 
@@ -304,7 +381,12 @@ export function createApp(now: () => Date = () => new Date()) {
       ).bind(date).run(),
       reconcileGoals(context.env.DB, date, now().toISOString()),
     ]);
-    const [{ results: values }, { results: actions }, goals] = await Promise.all([
+    const [
+      { results: values },
+      { results: actions },
+      goals,
+      reviewCount,
+    ] = await Promise.all([
       context.env.DB.prepare(
         `SELECT id, name, meaning, position
          FROM app_values
@@ -333,6 +415,9 @@ export function createApp(now: () => Date = () => new Date()) {
         .bind(date)
         .all<ActionRow>(),
       currentGoalLists(context.env.DB, date),
+      context.env.DB.prepare(
+        "SELECT COUNT(*) AS count FROM goals WHERE status = 'needs_review'",
+      ).first<{ count: number }>(),
     ]);
 
     const groupedActions = new Map<
@@ -368,6 +453,7 @@ export function createApp(now: () => Date = () => new Date()) {
       date,
       timeZone,
       goals,
+      needsReviewCount: reviewCount?.count ?? 0,
       values: values.map((value) => ({
         ...value,
         actions: [...groupedActions.values()].filter((action) =>
@@ -389,7 +475,13 @@ export function createApp(now: () => Date = () => new Date()) {
     const currentTime = now();
     const date = dateInTimeZone(currentTime, timeZone.effectiveTimeZone);
     await reconcileGoals(context.env.DB, date, currentTime.toISOString());
-    return context.json({ goals: await currentGoalLists(context.env.DB, date) });
+    const [goals, upcoming, needsReview, completed] = await Promise.all([
+      currentGoalLists(context.env.DB, date),
+      upcomingGoals(context.env.DB, date),
+      goalsWithStatus(context.env.DB, "needs_review"),
+      goalsWithStatus(context.env.DB, "completed"),
+    ]);
+    return context.json({ goals, upcoming, needsReview, completed });
   });
 
   app.post("/api/goals", async (context) => {
@@ -410,7 +502,9 @@ export function createApp(now: () => Date = () => new Date()) {
     const currentTime = now();
     const timestamp = currentTime.toISOString();
     const date = dateInTimeZone(currentTime, timeZone.effectiveTimeZone);
-    const periodStart = currentPeriodStarts(date)[body.horizon];
+    const target = goalPeriodFromInput(body.horizon, body.periodStart, date);
+    if ("error" in target) return apiError(context, 400, target.error);
+    const { periodStart } = target;
     const id = crypto.randomUUID();
     await context.env.DB.prepare(
       `INSERT INTO goals
@@ -476,6 +570,83 @@ export function createApp(now: () => Date = () => new Date()) {
     }
     const goals = (await currentGoalLists(context.env.DB, date))[body.horizon];
     return context.json({ goals });
+  });
+
+  app.patch("/api/goals/:goalId", async (context) => {
+    const timeZone = await timeZoneState(context);
+    if (!timeZone) {
+      return apiError(context, 400, "A valid browser time zone is required.");
+    }
+
+    const goalId = context.req.param("goalId");
+    const goal = await goalById(context.env.DB, goalId);
+    if (!goal) return apiError(context, 404, "Goal not found.");
+
+    const body = await readObject(context);
+    const currentTime = now();
+    const timestamp = currentTime.toISOString();
+    if (body?.action === "complete") {
+      if (goal.status === "completed") {
+        return apiError(context, 400, "That Goal is already Done.");
+      }
+      await context.env.DB.prepare(
+        "UPDATE goals SET status = 'completed', completed_at = ?, updated_at = ? WHERE id = ?",
+      ).bind(timestamp, timestamp, goalId).run();
+    } else if (body?.action === "restore") {
+      if (goal.status !== "completed") {
+        return apiError(context, 400, "Restore a Goal from Completed.");
+      }
+      const date = dateInTimeZone(currentTime, timeZone.effectiveTimeZone);
+      const currentPeriodStart = periodStartFor(goal.horizon, date);
+      const status = goal.horizon === "someday" || (
+          goal.periodStart &&
+          currentPeriodStart &&
+          goal.periodStart === currentPeriodStart
+        )
+        ? "active"
+        : "needs_review";
+      await context.env.DB.prepare(
+        "UPDATE goals SET status = ?, completed_at = NULL, updated_at = ? WHERE id = ?",
+      ).bind(status, timestamp, goalId).run();
+    } else if (body?.action === "move") {
+      if (goal.status !== "needs_review" || !isGoalHorizon(body.horizon)) {
+        return apiError(context, 400, "Move a Goal from Needs Review to a Goal List.");
+      }
+      const date = dateInTimeZone(currentTime, timeZone.effectiveTimeZone);
+      const target = goalPeriodFromInput(body.horizon, body.periodStart, date);
+      if ("error" in target) return apiError(context, 400, target.error);
+      const { periodStart } = target;
+      await context.env.DB.prepare(
+        `UPDATE goals
+         SET horizon = ?, period_start = ?, status = 'active',
+           position = (SELECT COALESCE(MAX(position), -1) + 1 FROM goals
+             WHERE status = 'active' AND horizon = ? AND period_start IS ?),
+           completed_at = NULL, updated_at = ?
+         WHERE id = ?`,
+      ).bind(
+        body.horizon,
+        periodStart,
+        body.horizon,
+        periodStart,
+        timestamp,
+        goalId,
+      ).run();
+    } else {
+      return apiError(context, 400, "Choose Move, Done, or Restore.");
+    }
+
+    const updated = await goalById(context.env.DB, goalId);
+    if (!updated) return apiError(context, 404, "Goal not found.");
+    const { status: _status, ...listed } = updated;
+    return context.json({ goal: listed });
+  });
+
+  app.delete("/api/goals/:goalId", async (context) => {
+    const result = await context.env.DB.prepare(
+      "DELETE FROM goals WHERE id = ?",
+    ).bind(context.req.param("goalId")).run();
+    if (!result.meta.changes) return apiError(context, 404, "Goal not found.");
+    return context.body(null, 204);
   });
 
   app.get("/api/settings", async (context) => {
