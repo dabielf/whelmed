@@ -20,4 +20,4 @@ pnpm check
 ```
 
 The deployed Worker expects two secrets: `TEAM_DOMAIN` and `POLICY_AUD`.
-The D1 `database_id` in `wrangler.jsonc` is local-only until a remote database is created.
+Local D1 data stays in `.wrangler/`; deployed data uses the bound `whelmed` D1 database.

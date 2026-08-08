@@ -3,6 +3,7 @@
   "name": "whelmed",
   "main": "./worker/index.ts",
   "compatibility_date": "2026-08-08",
+  "preview_urls": false,
   "assets": {
     "not_found_handling": "single-page-application",
     "run_worker_first": ["/api/*"]
@@ -11,7 +12,7 @@
     {
       "binding": "DB",
       "database_name": "whelmed",
-      "database_id": "00000000-0000-0000-0000-000000000000",
+      "database_id": "3aa81596-6327-4b77-8201-fc2a0d12828e",
       "migrations_dir": "migrations"
     }
   ]
