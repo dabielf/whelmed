@@ -52,10 +52,7 @@ type Goal = {
 
 type GoalLists = Record<GoalHorizon, Goal[]>;
 
-type GoalChange =
-  | { action: "complete" | "restore" }
-  | { action: "move"; horizon: GoalHorizon; periodStart?: string }
-  | { action: "edit"; text: string; horizon: GoalHorizon; periodStart?: string };
+type GoalChange = { action: "complete" | "restore" };
 
 type GoalEditor = {
   goal?: Goal;
