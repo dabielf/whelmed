@@ -2,6 +2,7 @@ import {
   type DragEvent,
   type FormEvent,
   type KeyboardEvent,
+  type PointerEvent as ReactPointerEvent,
   useCallback,
   useEffect,
   useRef,
@@ -60,6 +61,12 @@ type GoalEditor = {
   goal?: Goal;
   horizon: GoalHorizon;
   reviewing?: boolean;
+};
+
+type GoalDraft = {
+  text: string;
+  horizon: GoalHorizon;
+  periodStart?: string;
 };
 
 type GoalsData = {
@@ -898,9 +905,7 @@ function GoalsPage({
   loading: boolean;
   saveGoal: (
     editor: GoalEditor,
-    text: string,
-    horizon: GoalHorizon,
-    periodStart?: string,
+    draft: GoalDraft,
   ) => Promise<void>;
   orderGoals: (horizon: GoalHorizon, ids: string[]) => Promise<void>;
   changeGoal: (id: string, change: GoalChange) => Promise<void>;
@@ -1111,6 +1116,30 @@ function GoalList({
     if (ids) void runGoalChange(() => orderGoals(horizon, ids));
   }
 
+  function touchTarget(event: ReactPointerEvent<HTMLButtonElement>) {
+    return document.elementFromPoint(event.clientX, event.clientY)?.closest<HTMLElement>(
+      `[data-goal-horizon="${horizon}"]`,
+    )?.dataset.goalId;
+  }
+
+  function holdTouchDrag(event: ReactPointerEvent<HTMLButtonElement>) {
+    if (event.pointerType !== "mouse") event.preventDefault();
+  }
+
+  function finishTouchDrag(event: ReactPointerEvent<HTMLButtonElement>, sourceId: string) {
+    if (event.pointerType === "mouse") return;
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+    const targetId = touchTarget(event);
+    if (!targetId) return;
+    const ids = reorderedIds(
+      sourceId,
+      goals.findIndex((goal) => goal.id === targetId),
+    );
+    if (ids) void runGoalChange(() => orderGoals(horizon, ids));
+  }
+
   return (
     <section className="goal-list-section" aria-labelledby={`${horizon}-goals-title`}>
       <header>
@@ -1122,6 +1151,8 @@ function GoalList({
           {goals.map((goal, index) => (
             <li
               className="goal-row"
+              data-goal-horizon={horizon}
+              data-goal-id={goal.id}
               key={goal.id}
               onDragOver={(event) => event.preventDefault()}
               onDrop={(event) => dropGoal(event, index)}
@@ -1136,6 +1167,12 @@ function GoalList({
                   event.dataTransfer.effectAllowed = "move";
                 }}
                 onKeyDown={(event) => moveWithKeyboard(event, goal, index)}
+                onPointerDown={(event) => {
+                  if (event.pointerType === "mouse") return;
+                  event.currentTarget.setPointerCapture(event.pointerId);
+                }}
+                onPointerMove={holdTouchDrag}
+                onPointerUp={(event) => finishTouchDrag(event, goal.id)}
                 title="Drag to reorder. Arrow keys also work."
                 type="button"
               >
@@ -1250,9 +1287,7 @@ function GoalDialog({
   close: () => void;
   save: (
     editor: GoalEditor,
-    text: string,
-    horizon: GoalHorizon,
-    periodStart?: string,
+    draft: GoalDraft,
   ) => Promise<void>;
 }) {
   const dialog = useRef<HTMLDialogElement>(null);
@@ -1280,12 +1315,11 @@ function GoalDialog({
     setError("");
     setSaving(true);
     try {
-      await save(
-        editor,
+      await save(editor, {
         text,
         horizon,
-        horizon === "someday" || !periodStart ? undefined : periodStart,
-      );
+        periodStart: horizon === "someday" || !periodStart ? undefined : periodStart,
+      });
       dialog.current?.close();
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "Could not save this Goal.");
@@ -1346,6 +1380,11 @@ function GoalDialog({
               </label>
             )}
           </div>
+          {editor.reviewing && (
+            <p className="goal-review-help">
+              Saving moves this Goal out of review. A blank date means the current Week, Month, or Year.
+            </p>
+          )}
           {error && <p className="form-error" role="alert">{error}</p>}
           <footer className="dialog-actions">
             <span className="dialog-save-actions">
@@ -1952,16 +1991,12 @@ export default function App() {
 
   async function saveGoal(
     editor: GoalEditor,
-    text: string,
-    horizon: GoalHorizon,
-    periodStart?: string,
+    draft: GoalDraft,
   ) {
     await api(editor.goal ? `/api/goals/${editor.goal.id}` : "/api/goals", {
       body: JSON.stringify({
         ...(editor.goal && { action: "edit" }),
-        horizon,
-        periodStart,
-        text,
+        ...draft,
       }),
       method: editor.goal ? "PATCH" : "POST",
     });
