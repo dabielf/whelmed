@@ -1,4 +1,5 @@
 import { type FormEvent, useCallback, useEffect, useRef, useState } from "react";
+import { GoalsPrototype } from "./GoalsPrototype";
 import { historyRange, shiftDate, type HistoryPreset } from "./history-range";
 
 type Action = {
@@ -1654,6 +1655,8 @@ export default function App() {
   const [goalsLoading, setGoalsLoading] = useState(true);
   const [error, setError] = useState("");
   const [actionTarget, setActionTarget] = useState<ActionTarget>();
+  const showGoalsPrototype = import.meta.env.DEV
+    && new URLSearchParams(window.location.search).has("variant");
 
   const loadToday = useCallback(async () => {
     setError("");
@@ -1834,14 +1837,18 @@ export default function App() {
         />
       )}
       {route === "goals" && (
-        <GoalsPage
-          changeGoal={changeGoal}
-          createGoal={createGoal}
-          data={goalData}
-          loading={goalsLoading}
-          moveGoal={moveGoal}
-          removeGoal={removeGoal}
-        />
+        showGoalsPrototype ? (
+          <GoalsPrototype data={goalData} loading={goalsLoading} />
+        ) : (
+          <GoalsPage
+            changeGoal={changeGoal}
+            createGoal={createGoal}
+            data={goalData}
+            loading={goalsLoading}
+            moveGoal={moveGoal}
+            removeGoal={removeGoal}
+          />
+        )
       )}
       {route === "settings" && <SettingsPage data={today} saveTimeZone={saveTimeZone} />}
       {route === "history" && <HistoryPage today={today?.date} />}
