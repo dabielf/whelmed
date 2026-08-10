@@ -1,4 +1,12 @@
-import { type FormEvent, useCallback, useEffect, useRef, useState } from "react";
+import {
+  type DragEvent,
+  type FormEvent,
+  type KeyboardEvent,
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+} from "react";
 import { historyRange, shiftDate, type HistoryPreset } from "./history-range";
 
 type Action = {
@@ -45,7 +53,14 @@ type GoalLists = Record<GoalHorizon, Goal[]>;
 
 type GoalChange =
   | { action: "complete" | "restore" }
-  | { action: "move"; horizon: GoalHorizon; periodStart?: string };
+  | { action: "move"; horizon: GoalHorizon; periodStart?: string }
+  | { action: "edit"; text: string; horizon: GoalHorizon; periodStart?: string };
+
+type GoalEditor = {
+  goal?: Goal;
+  horizon: GoalHorizon;
+  reviewing?: boolean;
+};
 
 type GoalsData = {
   goals: GoalLists;
@@ -874,19 +889,26 @@ function SettingsPage({
 function GoalsPage({
   data,
   loading,
-  createGoal,
-  moveGoal,
+  saveGoal,
+  orderGoals,
   changeGoal,
   removeGoal,
 }: {
   data: GoalsData;
   loading: boolean;
-  createGoal: (horizon: GoalHorizon, text: string, periodStart?: string) => Promise<void>;
-  moveGoal: (horizon: GoalHorizon, id: string, direction: -1 | 1) => Promise<void>;
+  saveGoal: (
+    editor: GoalEditor,
+    text: string,
+    horizon: GoalHorizon,
+    periodStart?: string,
+  ) => Promise<void>;
+  orderGoals: (horizon: GoalHorizon, ids: string[]) => Promise<void>;
   changeGoal: (id: string, change: GoalChange) => Promise<void>;
   removeGoal: (goal: Goal) => Promise<void>;
 }) {
   const [error, setError] = useState("");
+  const [editor, setEditor] = useState<GoalEditor>();
+  const [reviewOpen, setReviewOpen] = useState(false);
 
   async function runGoalChange(change: () => Promise<void>) {
     setError("");
@@ -899,98 +921,137 @@ function GoalsPage({
 
   return (
     <main className="page goals-page">
-      <header className="page-heading">
-        <p className="eyebrow">Goals</p>
-        <h1>Your Goals</h1>
-        <p>Keep a few finishable outcomes nearby as friendly direction.</p>
+      <header className="goals-page-heading">
+        <div className="page-heading">
+          <p className="eyebrow">Goals</p>
+          <h1>Your Goals</h1>
+          <p>Finishable outcomes, kept close without taking over.</p>
+        </div>
+        <button
+          className="primary-button"
+          onClick={() => setEditor({ horizon: "week" })}
+          type="button"
+        >
+          Add Goal
+        </button>
       </header>
       {error && <p className="form-error" role="alert">{error}</p>}
 
       {loading ? (
         <p className="notice" aria-live="polite">Loading Goals…</p>
       ) : (
-        <div className="goal-lists">
-          {goalHorizons.map(({ horizon, label }) => (
-            <GoalList
-              createGoal={createGoal}
-              goals={data.goals[horizon]}
-              horizon={horizon}
-              key={horizon}
-              label={label}
-              moveGoal={moveGoal}
-              changeGoal={changeGoal}
-              removeGoal={removeGoal}
-            />
-          ))}
-        </div>
-      )}
-
-      {!loading && (
         <>
-          <section className="goal-state-section" aria-labelledby="upcoming-goals-title">
-            <header>
-              <h2 id="upcoming-goals-title">Upcoming</h2>
-              <span>{data.upcoming.length}</span>
-            </header>
-            {data.upcoming.length ? (
-              <ul className="managed-goals">
-                {data.upcoming.map((goal) => (
-                  <li key={goal.id}>
-                    <span className="goal-copy">
-                      <strong>{goal.text}</strong>
-                      <small>{goalPeriodLabel(goal)}</small>
-                    </span>
-                    <span className="goal-action-controls">
-                      <button className="quiet-button" onClick={() => void runGoalChange(() => changeGoal(goal.id, { action: "complete" }))} type="button">Done</button>
-                      <button className="danger-button" onClick={() => void runGoalChange(() => removeGoal(goal))} type="button">Delete</button>
-                    </span>
-                  </li>
-                ))}
-              </ul>
-            ) : <p className="goal-list-empty">No Upcoming Goals.</p>}
-          </section>
+          {data.needsReview.length > 0 && (
+            <section className="goal-review-notice" aria-labelledby="review-goals-title">
+              <button
+                aria-expanded={reviewOpen}
+                onClick={() => setReviewOpen((open) => !open)}
+                type="button"
+              >
+                <span aria-hidden="true">↻</span>
+                <span id="review-goals-title">
+                  {data.needsReview.length} {data.needsReview.length === 1 ? "Goal needs" : "Goals need"} review
+                  <small>Choose what happens next.</small>
+                </span>
+                <strong>{reviewOpen ? "Close" : "Review"}</strong>
+              </button>
+              {reviewOpen && (
+                <ul className="goal-review-list">
+                  {data.needsReview.map((goal) => (
+                    <li key={goal.id}>
+                      <span className="goal-copy">
+                        <strong>{goal.text}</strong>
+                        <small>From {goalPeriodLabel(goal)}</small>
+                      </span>
+                      <GoalCommands
+                        complete={() => runGoalChange(() => changeGoal(goal.id, { action: "complete" }))}
+                        edit={() => setEditor({ goal, horizon: goal.horizon, reviewing: true })}
+                        goal={goal}
+                        remove={() => runGoalChange(() => removeGoal(goal))}
+                      />
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </section>
+          )}
 
-          <section className="goal-state-section" aria-labelledby="review-goals-title">
-            <header>
-              <h2 id="review-goals-title">Needs Review</h2>
-              <span>{data.needsReview.length}</span>
-            </header>
-            <p className="goal-section-help">Choose where each expired Goal goes next.</p>
-            {data.needsReview.length ? (
-              <ul className="review-goals">
-                {data.needsReview.map((goal) => (
-                  <NeedsReviewGoal
-                    changeGoal={changeGoal}
-                    goal={goal}
-                    key={goal.id}
-                    removeGoal={removeGoal}
-                  />
-                ))}
-              </ul>
-            ) : <p className="goal-list-empty">Nothing needs review.</p>}
-          </section>
+          <div className="goal-lists">
+            {goalHorizons.map(({ horizon, label }) => (
+              <GoalList
+                changeGoal={changeGoal}
+                goals={data.goals[horizon]}
+                horizon={horizon}
+                key={horizon}
+                label={label}
+                openEditor={(goal) => setEditor({ goal, horizon })}
+                orderGoals={orderGoals}
+                removeGoal={removeGoal}
+              />
+            ))}
+          </div>
 
-          <details className="completed-goals">
-            <summary>Completed Goals <span>{data.completed.length}</span></summary>
-            {data.completed.length ? (
-              <ul className="managed-goals">
-                {data.completed.map((goal) => (
-                  <li key={goal.id}>
-                    <span className="goal-copy">
-                      <strong>{goal.text}</strong>
-                      <small>{goalPeriodLabel(goal)}</small>
-                    </span>
-                    <span className="goal-action-controls">
-                      <button className="quiet-button" onClick={() => void runGoalChange(() => changeGoal(goal.id, { action: "restore" }))} type="button">Restore</button>
-                      <button className="danger-button" onClick={() => void runGoalChange(() => removeGoal(goal))} type="button">Delete</button>
-                    </span>
-                  </li>
-                ))}
-              </ul>
-            ) : <p className="goal-list-empty">No Completed Goals.</p>}
-          </details>
+          {(data.upcoming.length > 0 || data.completed.length > 0) && (
+            <div className="goal-lifecycle-sections">
+              {data.upcoming.length > 0 && (
+                <details className="goal-lifecycle">
+                  <summary>Upcoming <span>{data.upcoming.length}</span></summary>
+                  <ul>
+                    {data.upcoming.map((goal) => (
+                      <li key={goal.id}>
+                        <span className="goal-copy">
+                          <strong>{goal.text}</strong>
+                          <small>{goalPeriodLabel(goal)}</small>
+                        </span>
+                        <GoalCommands
+                          complete={() => runGoalChange(() => changeGoal(goal.id, { action: "complete" }))}
+                          edit={() => setEditor({ goal, horizon: goal.horizon })}
+                          goal={goal}
+                          remove={() => runGoalChange(() => removeGoal(goal))}
+                        />
+                      </li>
+                    ))}
+                  </ul>
+                </details>
+              )}
+              {data.completed.length > 0 && (
+                <details className="goal-lifecycle">
+                  <summary>Completed Goals <span>{data.completed.length}</span></summary>
+                  <ul>
+                    {data.completed.map((goal) => (
+                      <li key={goal.id}>
+                        <span className="goal-copy">
+                          <strong>{goal.text}</strong>
+                          <small>{goalPeriodLabel(goal)}</small>
+                        </span>
+                        <span className="goal-commands">
+                          <button
+                            className="goal-restore"
+                            onClick={() => void runGoalChange(() => changeGoal(goal.id, { action: "restore" }))}
+                            type="button"
+                          >
+                            Restore
+                          </button>
+                          <GoalMore
+                            goal={goal}
+                            remove={() => runGoalChange(() => removeGoal(goal))}
+                          />
+                        </span>
+                      </li>
+                    ))}
+                  </ul>
+                </details>
+              )}
+            </div>
+          )}
         </>
       )}
+
+      <GoalDialog
+        close={() => setEditor(undefined)}
+        editor={editor}
+        save={saveGoal}
+      />
     </main>
   );
 }
@@ -999,25 +1060,23 @@ function GoalList({
   horizon,
   label,
   goals,
-  createGoal,
-  moveGoal,
+  orderGoals,
   changeGoal,
+  openEditor,
   removeGoal,
 }: {
   horizon: GoalHorizon;
   label: string;
   goals: Goal[];
-  createGoal: (horizon: GoalHorizon, text: string, periodStart?: string) => Promise<void>;
-  moveGoal: (horizon: GoalHorizon, id: string, direction: -1 | 1) => Promise<void>;
+  orderGoals: (horizon: GoalHorizon, ids: string[]) => Promise<void>;
   changeGoal: (id: string, change: GoalChange) => Promise<void>;
+  openEditor: (goal: Goal) => void;
   removeGoal: (goal: Goal) => Promise<void>;
 }) {
-  const [text, setText] = useState("");
-  const [periodStart, setPeriodStart] = useState("");
   const [error, setError] = useState("");
   const [saving, setSaving] = useState(false);
 
-  async function changeGoalList(change: () => Promise<void>) {
+  async function runGoalChange(change: () => Promise<void>) {
     setError("");
     setSaving(true);
     try {
@@ -1029,13 +1088,27 @@ function GoalList({
     }
   }
 
-  async function submit(event: FormEvent) {
+  function reorderedIds(id: string, target: number) {
+    const ids = goals.map((goal) => goal.id);
+    const source = ids.indexOf(id);
+    if (source < 0 || target < 0 || target >= ids.length || source === target) return;
+    ids.splice(target, 0, ids.splice(source, 1)[0]);
+    return ids;
+  }
+
+  function dropGoal(event: DragEvent<HTMLLIElement>, target: number) {
     event.preventDefault();
-    await changeGoalList(async () => {
-      await createGoal(horizon, text, periodStart || undefined);
-      setText("");
-      setPeriodStart("");
-    });
+    const [sourceHorizon, sourceId] = event.dataTransfer.getData("text/plain").split(":");
+    if (sourceHorizon !== horizon || !sourceId) return;
+    const ids = reorderedIds(sourceId, target);
+    if (ids) void runGoalChange(() => orderGoals(horizon, ids));
+  }
+
+  function moveWithKeyboard(event: KeyboardEvent<HTMLButtonElement>, goal: Goal, index: number) {
+    if (event.key !== "ArrowUp" && event.key !== "ArrowDown") return;
+    event.preventDefault();
+    const ids = reorderedIds(goal.id, index + (event.key === "ArrowUp" ? -1 : 1));
+    if (ids) void runGoalChange(() => orderGoals(horizon, ids));
   }
 
   return (
@@ -1045,134 +1118,246 @@ function GoalList({
         <span>{goals.length}</span>
       </header>
       {goals.length ? (
-        <ul className="managed-goals">
+        <ul className="goal-list">
           {goals.map((goal, index) => (
-            <li key={goal.id}>
-              <strong>{goal.text}</strong>
-              <span className="goal-action-controls">
-                <span className="goal-order-controls" aria-label={`Order ${goal.text}`}>
-                <button
-                  aria-label={`Move ${goal.text} up`}
-                  className="quiet-button"
-                  disabled={index === 0 || saving}
-                  onClick={() => void changeGoalList(() => moveGoal(horizon, goal.id, -1))}
-                  type="button"
-                >
-                  ↑
-                </button>
-                <button
-                  aria-label={`Move ${goal.text} down`}
-                  className="quiet-button"
-                  disabled={index === goals.length - 1 || saving}
-                  onClick={() => void changeGoalList(() => moveGoal(horizon, goal.id, 1))}
-                  type="button"
-                >
-                  ↓
-                </button>
-                </span>
-                <button className="quiet-button" disabled={saving} onClick={() => void changeGoalList(() => changeGoal(goal.id, { action: "complete" }))} type="button">Done</button>
-                <button className="danger-button" disabled={saving} onClick={() => void changeGoalList(() => removeGoal(goal))} type="button">Delete</button>
-              </span>
+            <li
+              className="goal-row"
+              key={goal.id}
+              onDragOver={(event) => event.preventDefault()}
+              onDrop={(event) => dropGoal(event, index)}
+            >
+              <button
+                aria-label={`Reorder ${goal.text}. Use arrow keys or drag.`}
+                className="goal-handle"
+                disabled={saving}
+                draggable={!saving}
+                onDragStart={(event) => {
+                  event.dataTransfer.setData("text/plain", `${horizon}:${goal.id}`);
+                  event.dataTransfer.effectAllowed = "move";
+                }}
+                onKeyDown={(event) => moveWithKeyboard(event, goal, index)}
+                title="Drag to reorder. Arrow keys also work."
+                type="button"
+              >
+                ⠿
+              </button>
+              <span className="goal-row-copy">{goal.text}</span>
+              <button
+                aria-label={`Mark ${goal.text} done`}
+                className="goal-done"
+                disabled={saving}
+                onClick={() => void runGoalChange(() => changeGoal(goal.id, { action: "complete" }))}
+                title="Mark Done"
+                type="button"
+              >
+                ✓
+              </button>
+              <GoalMore
+                disabled={saving}
+                edit={() => openEditor(goal)}
+                goal={goal}
+                remove={() => runGoalChange(() => removeGoal(goal))}
+              />
+              <span className="sr-only">Position {index + 1} of {goals.length}</span>
             </li>
           ))}
         </ul>
       ) : (
         <p className="goal-list-empty">No Goals here yet.</p>
       )}
-      <form className="quick-add-goal" onSubmit={submit}>
-        <label className="field">
-          <span>Add a {label} Goal</span>
-          <input
-            maxLength={200}
-            onChange={(event) => setText(event.target.value)}
-            placeholder="A finishable outcome"
-            required
-            value={text}
-          />
-        </label>
-        {horizon !== "someday" && (
-          <label className="field">
-            <span>Date in that {label} <small>Optional</small></span>
-            <input
-              onChange={(event) => setPeriodStart(event.target.value)}
-              type="date"
-              value={periodStart}
-            />
-          </label>
-        )}
-        <button className="primary-button" disabled={saving} type="submit">
-          {saving ? "Adding…" : "Add Goal"}
-        </button>
-      </form>
       {error && <p className="form-error" role="alert">{error}</p>}
     </section>
   );
 }
 
-function NeedsReviewGoal({
+function GoalCommands({
   goal,
-  changeGoal,
-  removeGoal,
+  complete,
+  edit,
+  remove,
 }: {
   goal: Goal;
-  changeGoal: (id: string, change: GoalChange) => Promise<void>;
-  removeGoal: (goal: Goal) => Promise<void>;
+  complete: () => Promise<void>;
+  edit: () => void;
+  remove: () => Promise<void>;
 }) {
-  const [horizon, setHorizon] = useState<GoalHorizon>(goal.horizon);
-  const [periodStart, setPeriodStart] = useState("");
-  const [saving, setSaving] = useState(false);
-  const [error, setError] = useState("");
+  return (
+    <span className="goal-commands">
+      <button
+        aria-label={`Mark ${goal.text} done`}
+        className="goal-done"
+        onClick={() => void complete()}
+        type="button"
+      >
+        ✓
+      </button>
+      <GoalMore edit={edit} goal={goal} remove={remove} />
+    </span>
+  );
+}
 
-  async function runGoalChange(change: () => Promise<void>) {
+function GoalMore({
+  goal,
+  edit,
+  remove,
+  disabled = false,
+}: {
+  goal: Goal;
+  edit?: () => void;
+  remove: () => Promise<void>;
+  disabled?: boolean;
+}) {
+  const menu = useRef<HTMLDetailsElement>(null);
+
+  return (
+    <details className="goal-more" ref={menu}>
+      <summary aria-label={`More actions for ${goal.text}`} title="More actions">•••</summary>
+      <span>
+        {edit && (
+          <button
+            disabled={disabled}
+            onClick={() => {
+              menu.current?.removeAttribute("open");
+              edit();
+            }}
+            type="button"
+          >
+            Edit
+          </button>
+        )}
+        <button
+          className="danger-button"
+          disabled={disabled}
+          onClick={() => {
+            menu.current?.removeAttribute("open");
+            void remove();
+          }}
+          type="button"
+        >
+          Delete
+        </button>
+      </span>
+    </details>
+  );
+}
+
+function GoalDialog({
+  editor,
+  close,
+  save,
+}: {
+  editor?: GoalEditor;
+  close: () => void;
+  save: (
+    editor: GoalEditor,
+    text: string,
+    horizon: GoalHorizon,
+    periodStart?: string,
+  ) => Promise<void>;
+}) {
+  const dialog = useRef<HTMLDialogElement>(null);
+  const goalInput = useRef<HTMLInputElement>(null);
+  const [text, setText] = useState("");
+  const [horizon, setHorizon] = useState<GoalHorizon>("week");
+  const [periodStart, setPeriodStart] = useState("");
+  const [error, setError] = useState("");
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    if (!editor || !dialog.current || dialog.current.open) return;
+    setText(editor.goal?.text ?? "");
+    setHorizon(editor.goal?.horizon ?? editor.horizon);
+    setPeriodStart(editor.reviewing ? "" : editor.goal?.periodStart ?? "");
+    setError("");
+    setSaving(false);
+    dialog.current.showModal();
+    goalInput.current?.focus();
+  }, [editor]);
+
+  async function submit(event: FormEvent) {
+    event.preventDefault();
+    if (!editor) return;
     setError("");
     setSaving(true);
     try {
-      await change();
+      await save(
+        editor,
+        text,
+        horizon,
+        horizon === "someday" || !periodStart ? undefined : periodStart,
+      );
+      dialog.current?.close();
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "Could not update this Goal.");
-    } finally {
+      setError(caught instanceof Error ? caught.message : "Could not save this Goal.");
       setSaving(false);
     }
   }
 
   return (
-    <li>
-      <div className="review-goal-heading">
-        <strong>{goal.text}</strong>
-        <small>Former period: {goalPeriodLabel(goal)}</small>
-      </div>
-      <div className="review-goal-choice">
-        <label className="field">
-          <span>Move to</span>
-          <select onChange={(event) => setHorizon(event.target.value as GoalHorizon)} value={horizon}>
-            {goalHorizons.map((item) => <option key={item.horizon} value={item.horizon}>{item.label}</option>)}
-          </select>
-        </label>
-        {horizon !== "someday" && (
+    <dialog className="action-dialog goal-dialog" onClose={close} ref={dialog}>
+      {editor && (
+        <form onSubmit={submit}>
+          <header className="dialog-heading">
+            <div>
+              <p className="eyebrow">{editor.goal ? "Change" : "New"}</p>
+              <h2>{editor.goal ? "Edit Goal" : "Add Goal"}</h2>
+            </div>
+            <button
+              aria-label="Close Goal form"
+              className="close-button"
+              onClick={() => dialog.current?.close()}
+              type="button"
+            >
+              ×
+            </button>
+          </header>
           <label className="field">
-            <span>Date <small>Optional. Blank means current.</small></span>
-            <input onChange={(event) => setPeriodStart(event.target.value)} type="date" value={periodStart} />
+            <span>Finishable outcome</span>
+            <input
+              autoFocus
+              maxLength={200}
+              onChange={(event) => setText(event.target.value)}
+              placeholder="What do you want to finish?"
+              ref={goalInput}
+              required
+              value={text}
+            />
           </label>
-        )}
-        <button
-          className="primary-button"
-          disabled={saving}
-          onClick={() => void runGoalChange(() => changeGoal(goal.id, {
-            action: "move",
-            horizon,
-            periodStart: horizon === "someday" || !periodStart ? undefined : periodStart,
-          }))}
-          type="button"
-        >
-          Move Goal
-        </button>
-      </div>
-      <div className="review-goal-actions">
-        <button className="quiet-button" disabled={saving} onClick={() => void runGoalChange(() => changeGoal(goal.id, { action: "complete" }))} type="button">Done</button>
-        <button className="danger-button" disabled={saving} onClick={() => void runGoalChange(() => removeGoal(goal))} type="button">Delete</button>
-      </div>
-      {error && <p className="form-error" role="alert">{error}</p>}
-    </li>
+          <div className="goal-form-fields">
+            <label className="field">
+              <span>Time group</span>
+              <select
+                onChange={(event) => setHorizon(event.target.value as GoalHorizon)}
+                value={horizon}
+              >
+                {goalHorizons.map(({ horizon: value, label }) => (
+                  <option key={value} value={value}>{label}</option>
+                ))}
+              </select>
+            </label>
+            {horizon !== "someday" && (
+              <label className="field">
+                <span>Date <small>Optional</small></span>
+                <input
+                  onChange={(event) => setPeriodStart(event.target.value)}
+                  type="date"
+                  value={periodStart}
+                />
+              </label>
+            )}
+          </div>
+          {error && <p className="form-error" role="alert">{error}</p>}
+          <footer className="dialog-actions">
+            <span className="dialog-save-actions">
+              <button className="quiet-button" onClick={() => dialog.current?.close()} type="button">Cancel</button>
+              <button className="primary-button" disabled={saving} type="submit">
+                {saving ? "Saving…" : editor.goal ? "Save Goal" : "Add Goal"}
+              </button>
+            </span>
+          </footer>
+        </form>
+      )}
+    </dialog>
   );
 }
 
@@ -1765,24 +1950,25 @@ export default function App() {
     await loadToday();
   }
 
-  async function createGoal(horizon: GoalHorizon, text: string, periodStart?: string) {
-    await api("/api/goals", {
-      body: JSON.stringify({ horizon, text, periodStart }),
-      method: "POST",
+  async function saveGoal(
+    editor: GoalEditor,
+    text: string,
+    horizon: GoalHorizon,
+    periodStart?: string,
+  ) {
+    await api(editor.goal ? `/api/goals/${editor.goal.id}` : "/api/goals", {
+      body: JSON.stringify({
+        ...(editor.goal && { action: "edit" }),
+        horizon,
+        periodStart,
+        text,
+      }),
+      method: editor.goal ? "PATCH" : "POST",
     });
     await Promise.all([loadGoals(), loadToday()]);
   }
 
-  async function moveGoal(
-    horizon: GoalHorizon,
-    id: string,
-    direction: -1 | 1,
-  ) {
-    const ids = goalData.goals[horizon].map((goal) => goal.id);
-    const index = ids.indexOf(id);
-    const target = index + direction;
-    if (index < 0 || target < 0 || target >= ids.length) return;
-    [ids[index], ids[target]] = [ids[target], ids[index]];
+  async function orderGoals(horizon: GoalHorizon, ids: string[]) {
     await api("/api/goals/order", {
       body: JSON.stringify({ horizon, ids }),
       method: "PUT",
@@ -1836,11 +2022,11 @@ export default function App() {
       {route === "goals" && (
         <GoalsPage
           changeGoal={changeGoal}
-          createGoal={createGoal}
           data={goalData}
           loading={goalsLoading}
-          moveGoal={moveGoal}
+          orderGoals={orderGoals}
           removeGoal={removeGoal}
+          saveGoal={saveGoal}
         />
       )}
       {route === "settings" && <SettingsPage data={today} saveTimeZone={saveTimeZone} />}

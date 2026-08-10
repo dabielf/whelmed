@@ -605,7 +605,50 @@ export function createApp(now: () => Date = () => new Date()) {
     const body = await readObject(context);
     const currentTime = now();
     const timestamp = currentTime.toISOString();
-    if (body?.action === "complete") {
+    if (body?.action === "edit") {
+      const text = readText(body.text, 200);
+      if (!text) {
+        return apiError(context, 400, "Use a finishable outcome from 1 to 200 characters.");
+      }
+      if (!isGoalHorizon(body.horizon)) {
+        return apiError(context, 400, "Choose Week, Month, Year, or Someday.");
+      }
+      if (goal.status === "completed") {
+        return apiError(context, 400, "Restore a completed Goal before editing it.");
+      }
+
+      const date = dateInTimeZone(currentTime, timeZone.effectiveTimeZone);
+      const target = goalPeriodFromInput(body.horizon, body.periodStart, date);
+      if ("error" in target) return apiError(context, 400, target.error);
+      const { periodStart } = target;
+      let position = goal.position;
+      if (
+        goal.status !== "active" ||
+        goal.horizon !== body.horizon ||
+        goal.periodStart !== periodStart
+      ) {
+        const last = await context.env.DB.prepare(
+          `SELECT COALESCE(MAX(position), -1) AS position
+           FROM goals
+           WHERE status = 'active' AND horizon = ? AND period_start IS ?`,
+        ).bind(body.horizon, periodStart).first<{ position: number }>();
+        position = (last?.position ?? -1) + 1;
+      }
+
+      await context.env.DB.prepare(
+        `UPDATE goals
+         SET text = ?, horizon = ?, period_start = ?, status = 'active',
+           position = ?, completed_at = NULL, updated_at = ?
+         WHERE id = ?`,
+      ).bind(
+        text,
+        body.horizon,
+        periodStart,
+        position,
+        timestamp,
+        goalId,
+      ).run();
+    } else if (body?.action === "complete") {
       if (goal.status === "completed") {
         return apiError(context, 400, "That Goal is already Done.");
       }
@@ -652,7 +695,7 @@ export function createApp(now: () => Date = () => new Date()) {
         goalId,
       ).run();
     } else {
-      return apiError(context, 400, "Choose Move, Done, or Restore.");
+      return apiError(context, 400, "Choose Edit, Move, Done, or Restore.");
     }
 
     const updated = await goalById(context.env.DB, goalId);

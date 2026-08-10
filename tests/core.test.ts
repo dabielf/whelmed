@@ -1114,6 +1114,42 @@ describe("current Goals", () => {
     });
   });
 
+  it("edits a Goal's text, time group, and optional date", async () => {
+    const app = createApp(now);
+    const goal = await createGoal(app, "week", "Book a break");
+
+    const response = await request(app, `/api/goals/${goal.id}`, {
+      method: "PATCH",
+      body: JSON.stringify({
+        action: "edit",
+        text: "Book a quiet break",
+        horizon: "month",
+        periodStart: "2026-09-14",
+      }),
+    });
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({
+      goal: {
+        ...goal,
+        text: "Book a quiet break",
+        horizon: "month",
+        periodStart: "2026-09-01",
+      },
+    });
+    expect(await (await request(app, "/api/goals")).json()).toEqual({
+      goals: { week: [], month: [], year: [], someday: [] },
+      upcoming: [{
+        ...goal,
+        text: "Book a quiet break",
+        horizon: "month",
+        periodStart: "2026-09-01",
+      }],
+      needsReview: [],
+      completed: [],
+    });
+  });
+
   it("fully reorders one current Goal List and returns all current Goals on Today", async () => {
     const app = createApp(now);
     const first = await createGoal(app, "week", "Send one application");
