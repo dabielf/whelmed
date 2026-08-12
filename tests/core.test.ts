@@ -1,6 +1,7 @@
 import { env } from "cloudflare:workers";
 import { beforeEach, describe, expect, it } from "vitest";
 import { historyRange } from "../src/history-range";
+import { historyView } from "../src/history-view";
 import { createApp } from "../worker";
 
 const now = () => new Date("2026-08-08T10:00:00.000Z");
@@ -1228,6 +1229,34 @@ describe("History date presets", () => {
     });
     expect(historyRange("2025-05-31", "3months").start).toBe("2025-02-28");
     expect(historyRange("2024-05-31", "3months").start).toBe("2024-02-29");
+  });
+
+  it("counts and groups a multi-Value action under each Value", () => {
+    const values = [
+      { key: "care", id: "care", name: "Care", deleted: false },
+      { key: "health", id: "health", name: "Health", deleted: false },
+    ];
+    const view = historyView({
+      start: "2026-07-09",
+      end: "2026-08-07",
+      counts: values.map((value) => ({ ...value, count: 1 })),
+      actions: [{
+        id: "walk",
+        date: "2026-08-07",
+        text: "Took a short walk",
+        values,
+      }],
+    });
+
+    expect(view.total).toBe(2);
+    expect(view.days).toEqual([expect.objectContaining({
+      date: "2026-08-07",
+      total: 2,
+      values: [
+        expect.objectContaining({ key: "care", actions: [expect.objectContaining({ id: "walk" })] }),
+        expect.objectContaining({ key: "health", actions: [expect.objectContaining({ id: "walk" })] }),
+      ],
+    })]);
   });
 });
 

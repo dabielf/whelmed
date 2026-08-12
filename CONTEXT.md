@@ -45,7 +45,7 @@ The day view of every Active Value, including Values with no Daily Action yet. E
 The Time Zone used to decide Today and when a Daily Log becomes History across devices. The person may choose it in Settings; until then, each browser supplies its Time Zone and Settings reminds the person to confirm one.
 
 **History**:
-The read-only record of completed Daily Actions from past days. It can show how many completed Daily Actions each Value has over a chosen date range, without adding streaks or scores. A completed Daily Action linked to several Values adds one to each Value's count; unfinished actions never appear.
+The clear, uplifting overview of completed Daily Actions from past days. It makes the build-up of small, Value-aligned actions easy to see over time, without adding streaks or scores. Each Value linked to a completed Daily Action adds one Value-aligned action to History; unfinished actions never appear.
 
 **Action Menu**:
 A reusable list of Value-aligned Actions saved under a Value for times when choosing an action is hard. A Daily Action may come from this menu or be entered freely; a free entry may be saved to the menu for later reuse.

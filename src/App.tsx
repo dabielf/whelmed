@@ -8,7 +8,8 @@ import {
   useRef,
   useState,
 } from "react";
-import { historyRange, shiftDate, type HistoryPreset } from "./history-range";
+import { historyRange, type HistoryPreset } from "./history-range";
+import { historyView, type HistoryData } from "./history-view";
 
 type Action = {
   id: string;
@@ -83,25 +84,6 @@ type Today = {
   goals: GoalLists;
   needsReviewCount: number;
   values: Value[];
-};
-
-type HistoryValue = {
-  key: string;
-  id: string | null;
-  name: string;
-  deleted: boolean;
-};
-
-type HistoryData = {
-  start: string;
-  end: string;
-  counts: (HistoryValue & { count: number })[];
-  actions: {
-    id: string;
-    date: string;
-    text: string;
-    values: HistoryValue[];
-  }[];
 };
 
 type ActionTarget = {
@@ -1398,84 +1380,61 @@ function GoalDialog({
 }
 
 function HistoryPage({ today }: { today?: string }) {
-  const [preset, setPreset] = useState<HistoryPreset | "custom">(30);
-  const [start, setStart] = useState("");
-  const [end, setEnd] = useState("");
-  const [selectedValue, setSelectedValue] = useState<string>();
+  const [preset, setPreset] = useState<HistoryPreset>(30);
   const [data, setData] = useState<HistoryData>();
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const historyRequest = useRef(0);
 
-  const loadHistory = useCallback(async (
-    nextStart: string,
-    nextEnd: string,
-    value?: string,
-  ) => {
+  const loadHistory = useCallback(async (nextPreset: HistoryPreset) => {
+    if (!today) return;
     const request = ++historyRequest.current;
+    const range = historyRange(today, nextPreset);
     setError("");
+    setData(undefined);
     setLoading(true);
     try {
-      const query = new URLSearchParams({ start: nextStart, end: nextEnd });
-      if (value) query.set("value", value);
+      const query = new URLSearchParams(range);
       const nextData = await api<HistoryData>(`/api/history?${query}`);
       if (request === historyRequest.current) setData(nextData);
     } catch (caught) {
       if (request === historyRequest.current) {
-        setError(caught instanceof Error ? caught.message : "Could not load History.");
+        setError(caught instanceof TypeError
+          ? "Could not load History."
+          : caught instanceof Error ? caught.message : "Could not load History.");
       }
     } finally {
       if (request === historyRequest.current) setLoading(false);
     }
-  }, []);
+  }, [today]);
 
   useEffect(() => {
     if (!today) return;
-    const range = historyRange(today, 30);
-    setStart(range.start);
-    setEnd(range.end);
-    void loadHistory(range.start, range.end);
-  }, [loadHistory, today]);
+    void loadHistory(preset);
+  }, [loadHistory, preset, today]);
 
   function choosePreset(nextPreset: HistoryPreset) {
-    if (!today) return;
-    const range = historyRange(today, nextPreset);
     setPreset(nextPreset);
-    setStart(range.start);
-    setEnd(range.end);
-    setSelectedValue(undefined);
-    void loadHistory(range.start, range.end);
   }
 
-  function applyCustomRange(event: FormEvent) {
-    event.preventDefault();
-    const lastPastDate = today ? shiftDate(today, -1) : "";
-    if (!start || !end || start > end || end > lastPastDate) {
-      setError("Choose a past range, from the first date to the last.");
-      return;
-    }
-    setSelectedValue(undefined);
-    void loadHistory(start, end);
-  }
-
-  function filterBy(value?: string) {
-    setSelectedValue(value);
-    void loadHistory(start, end, value);
-  }
+  const period = preset === "3months" ? "3 months" : `${preset} days`;
+  const { days, total } = data ? historyView(data) : { days: [], total: 0 };
 
   return (
     <main className="page history-page">
       <header className="history-page-heading">
-        <div className="page-heading">
+        <div>
           <p className="eyebrow">History</p>
-          <h1>Done actions</h1>
-          <p>Only past actions marked Done.</p>
+          <h1>
+            {data ? total === 0
+              ? <>Over the last {period}, there were no Value-aligned actions.</>
+              : <>
+              Over the last {period}: <strong>{total}</strong> Value-aligned {total === 1 ? "action" : "actions"}.
+                </>
+              : "History"}
+          </h1>
         </div>
-        <span className="read-only-label">Read only</span>
-      </header>
-
-      <section className="history-range" aria-label="History date range">
-        <div className="history-presets" role="group" aria-label="Date range presets">
+        <div className="history-presets" role="group" aria-label="History period">
           {historyPresets.map((item) => (
             <button
               aria-pressed={preset === item.preset}
@@ -1488,104 +1447,61 @@ function HistoryPage({ today }: { today?: string }) {
               {item.label}
             </button>
           ))}
-          <button
-            aria-pressed={preset === "custom"}
-            className="history-preset"
-            disabled={!today}
-            onClick={() => setPreset("custom")}
-            type="button"
-          >
-            Custom
-          </button>
         </div>
-        {preset === "custom" && (
-          <form className="custom-history-range" onSubmit={applyCustomRange}>
-            <label className="field">
-              <span>From</span>
-              <input
-                max={today ? shiftDate(today, -1) : undefined}
-                onChange={(event) => setStart(event.target.value)}
-                required
-                type="date"
-                value={start}
-              />
-            </label>
-            <label className="field">
-              <span>To</span>
-              <input
-                max={today ? shiftDate(today, -1) : undefined}
-                onChange={(event) => setEnd(event.target.value)}
-                required
-                type="date"
-                value={end}
-              />
-            </label>
-            <button className="quiet-button" type="submit">Show range</button>
-          </form>
-        )}
-      </section>
+      </header>
 
       {error && <p className="form-error history-error" role="alert">{error}</p>}
       {loading ? (
         <p className="notice" aria-live="polite">Loading History…</p>
       ) : !data?.actions.length && !data?.counts.length ? (
-        <p className="history-empty">No Done actions in this period.</p>
+        <p className="history-empty">Done actions from past days will appear here.</p>
       ) : data ? (
-        <section aria-labelledby="history-actions-title">
-          <header className="history-summary">
-            <div>
-              <h2 id="history-actions-title">Done actions</h2>
-              <p>{shortDate(data.start)} to {shortDate(data.end)}</p>
-            </div>
-            <span>{data.actions.length} shown</span>
-          </header>
-          <div className="history-value-filters" aria-label="Filter by Value" role="group">
-            <button
-              aria-pressed={!selectedValue}
-              className="history-value-filter"
-              onClick={() => filterBy()}
-              type="button"
-            >
-              All
-            </button>
+        <>
+          <section className="history-value-overview" aria-label="Value-aligned actions by Value">
             {data.counts.map((count) => (
-              <button
-                aria-pressed={selectedValue === count.key}
-                className="history-value-filter"
-                key={count.key}
-                onClick={() => filterBy(count.key)}
-                type="button"
-              >
-                <span>
-                  {count.name}
-                  {count.deleted && <small>Deleted Value</small>}
-                </span>
-                <strong aria-label={`${count.count} Done actions`}>{count.count}</strong>
-              </button>
+              <article className="history-value-count" key={count.key}>
+                <header>
+                  <h2>
+                    {count.name}
+                    {count.deleted && <small>Deleted Value</small>}
+                  </h2>
+                  <strong>{count.count}</strong>
+                </header>
+                <div aria-hidden="true" className="history-marks">
+                  {Array.from({ length: count.count }, (_, index) => <i key={index} />)}
+                </div>
+              </article>
             ))}
-          </div>
-          {data.actions.length ? (
-            <div className="history-stream">
-              {data.actions.map((action) => (
-                <article className="history-row" key={action.id}>
-                  <div className="history-row-values">
-                    {action.values.map((value) => (
-                      <span key={value.key}>
+          </section>
+
+          <section className="history-days" aria-labelledby="history-days-title">
+            <header className="history-days-heading">
+              <p className="eyebrow">Day by day</p>
+              <h2 id="history-days-title">The actions behind the numbers</h2>
+            </header>
+            {days.map((day) => (
+              <article className="history-day" key={day.date}>
+                <header>
+                  <h3><time dateTime={day.date}>{formattedDate(day.date)}</time></h3>
+                  <p>{day.total} Value-aligned {day.total === 1 ? "action" : "actions"}</p>
+                </header>
+                <div className="history-day-values">
+                  {day.values.map((value) => (
+                    <section className="history-day-value" key={value.key}>
+                      <h4>
                         {value.name}
                         {value.deleted && <small>Deleted Value</small>}
-                      </span>
-                    ))}
-                  </div>
-                  <p>{action.text}</p>
-                  <time dateTime={action.date}>{shortDate(action.date)}</time>
-                </article>
-              ))}
-            </div>
-          ) : (
-            <p className="history-empty">No Done actions for this Value.</p>
-          )}
-          <p className="history-note">Counts show how many Done actions included each Value.</p>
-        </section>
+                      </h4>
+                      <ul>
+                        {value.actions.map((action) => <li key={action.id}>{action.text}</li>)}
+                      </ul>
+                    </section>
+                  ))}
+                </div>
+              </article>
+            ))}
+          </section>
+        </>
       ) : null}
     </main>
   );

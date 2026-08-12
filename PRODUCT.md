@@ -31,6 +31,8 @@ Whelmed must not feel clinical, childish, gamified, or driven by productivity pr
 - Include known shortcuts that reduce the effort to read, choose, or enter information in the first build; visual polish may wait.
 - Show progress as useful information, never pressure or praise.
 - Keep choices visible and language plain when the user's capacity is low.
+- Let the interface explain itself; remove text that only repeats what is already clear on screen.
+- Open History on the past 30 days so the build-up is visible without making the first view too long.
 - Work comfortably on both phone and computer.
 
 ## Accessibility & Inclusion
